@@ -1,0 +1,292 @@
+{
+    "id": "gw-layout-1",
+    "name": "GW Layout 1",
+    "source": "gw",
+    "version": "1.0.0",
+    "boardWidth": 60,
+    "boardHeight": 44,
+    "pieces": [
+        {
+            "id": "piece-1",
+            "name": "Center Big Ruin L",
+            "shapes": [
+                { "type": "rectangle", "width": 10, "height": 5 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 9, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 9, "y": 1 },
+                    "end": { "x": 9, "y": 4 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 23, "y": 10 },
+            "rotation": 45,
+            "blocking": true,
+            "height": 5,
+            "category": "ruins"
+        },
+        {
+            "id": "piece-2",
+            "name": "Home Big Ruin L",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 12, "y": 5 },
+            "blocking": true,
+            "height": 5,
+            "rotation": 90,
+            "category": "structure"
+        },
+        {
+            "id": "piece-3",
+            "name": "Home Big Ruin R",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 11, "y": 1 },
+                    "end": { "x": 11, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 4, "y": 22 },
+            "blocking": true,
+            "height": 5,
+            "category": "structure"
+        },
+        {
+            "id": "piece-4",
+            "name": "Home Big Ruin U",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 5 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 11, "y": 1 },
+                    "end": { "x": 11, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 22, "y": 40 },
+            "blocking": true,
+            "rotation": 90,
+            "mirrored": true,
+            "height": 5,
+            "category": "structure"
+        },
+        {
+            "id": "piece-5",
+            "name": "Center Small Box",
+            "shapes": [
+                { "type": "rectangle", "width": 6, "height": 4 },
+                { "type": "rectangle", "width": 5, "height": 3 }
+            ],
+            "position": { "x": 22.25, "y": 24.9 },
+            "mirrored": true,
+            "rotation": 135,
+            "blocking": true,
+            "height": 4,
+            "category": "ruins"
+        },
+        {
+            "id": "piece-6",
+            "name": "Center Box Top",
+            "shapes": [
+                { "type": "rectangle", "width": 6, "height": 4 },
+                { "type": "rectangle", "width": 5, "height": 3 }
+            ],
+            "position": { "x": 28, "y": 0 },
+            "mirrored": true,
+            "rotation": 270,
+            "blocking": true,
+            "height": 4,
+            "category": "ruins"
+        },
+        {
+            "id": "piece-7",
+            "name": "Center Big Ruin L (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 10, "height": 5 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 9, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 9, "y": 1 },
+                    "end": { "x": 9, "y": 4 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 37, "y": 34 },
+            "rotation": 225,
+            "blocking": true,
+            "height": 5,
+            "category": "ruins"
+        },
+        {
+            "id": "piece-8",
+            "name": "Home Big Ruin L (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 48, "y": 39 },
+            "blocking": true,
+            "height": 5,
+            "rotation": 270,
+            "category": "structure"
+        },
+        {
+            "id": "piece-9",
+            "name": "Home Big Ruin R (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 11, "y": 1 },
+                    "end": { "x": 11, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 56, "y": 22 },
+            "blocking": true,
+            "height": 5,
+            "rotation": 180,
+            "category": "structure"
+        },
+        {
+            "id": "piece-10",
+            "name": "Home Big Ruin U (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 12, "height": 6 },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 11, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 5 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 11, "y": 1 },
+                    "end": { "x": 11, "y": 5 },
+                    "thickness": 1
+                }
+            ],
+            "position": { "x": 38, "y": 4 },
+            "blocking": true,
+            "rotation": 270,
+            "mirrored": true,
+            "height": 5,
+            "category": "structure"
+        },
+        {
+            "id": "piece-11",
+            "name": "Center Small Box (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 6, "height": 4 },
+                { "type": "rectangle", "width": 5, "height": 3 }
+            ],
+            "position": { "x": 37.75, "y": 19.1 },
+            "rotation": 315,
+            "mirrored": true,
+            "blocking": true,
+            "height": 4,
+            "category": "ruins"
+        },
+        {
+            "id": "piece-12",
+            "name": "Center Box Top (Mirrored)",
+            "shapes": [
+                { "type": "rectangle", "width": 6, "height": 4 },
+                { "type": "rectangle", "width": 5, "height": 3 }
+            ],
+            "position": { "x": 32, "y": 44 },
+            "rotation": 90,
+            "mirrored": true,
+            "blocking": true,
+            "height": 4,
+            "category": "ruins"
+        }
+    ],
+    "deploymentZones": [
+        {
+            "name": "Attacker",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 0 },
+            "color": "#3b82f6",
+            "labelPosition": { "x": 54, "y": 2 }
+        },
+        {
+            "name": "Opponent",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 32 },
+            "color": "#ef4444",
+            "labelPosition": { "x": 2, "y": 42 }
+        }
+    ],
+    "metadata": {
+        "description": "Standard GW terrain layout with balanced LOS blocking",
+        "missionType": "Leviathan",
+        "created": "2026-02-09"
+    }
+}

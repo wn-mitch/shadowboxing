@@ -1,0 +1,77 @@
+[
+	{
+		"size": 25,
+		"diameterMm": 25,
+		"radiusInches": 0.492
+	},
+	{
+		"size": 28,
+		"diameterMm": 28,
+		"radiusInches": 0.551
+	},
+	{
+		"size": 32,
+		"diameterMm": 32,
+		"radiusInches": 0.630
+	},
+	{
+		"size": 40,
+		"diameterMm": 40,
+		"radiusInches": 0.787
+	},
+	{
+		"size": 50,
+		"diameterMm": 50,
+		"radiusInches": 0.984
+	},
+	{
+		"size": 60,
+		"diameterMm": 60,
+		"radiusInches": 1.181
+	},
+	{
+		"size": 65,
+		"diameterMm": 65,
+		"radiusInches": 1.280
+	},
+	{
+		"size": 75,
+		"diameterMm": 75,
+		"radiusInches": 1.476
+	},
+	{
+		"size": 80,
+		"diameterMm": 80,
+		"radiusInches": 1.575
+	},
+	{
+		"size": 90,
+		"diameterMm": 90,
+		"radiusInches": 1.772
+	},
+	{
+		"size": 100,
+		"diameterMm": 100,
+		"radiusInches": 1.969
+	},
+	{
+		"size": 105,
+		"diameterMm": 105,
+		"radiusInches": 2.067
+	},
+	{
+		"size": 130,
+		"diameterMm": 130,
+		"radiusInches": 2.559
+	},
+	{
+		"size": 160,
+		"diameterMm": 160,
+		"radiusInches": 3.150
+	},
+	{
+		"size": 170,
+		"diameterMm": 170,
+		"radiusInches": 3.346
+	}
+]
