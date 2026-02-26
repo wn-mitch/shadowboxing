@@ -1,0 +1,20 @@
+# Rust / Cargo
+/target/
+# Note: Cargo.lock is intentionally NOT ignored — this is a binary crate and
+# committing the lockfile ensures reproducible builds.
+
+# Bevy assets compiled cache
+assets/**/*.meta
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# Bevy dynamic linking (dev feature)
+*.dylib
+*.so
+*.dll
