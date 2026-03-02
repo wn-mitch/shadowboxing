@@ -113,11 +113,16 @@
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
                 {
-                    "type": "rectangle",
-                    "width": 5,
-                    "height": 3,
-                    "x": 0.5,
-                    "y": 0.5
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 5, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 3 },
+                    "thickness": 1
                 }
             ],
             "position": { "x": 22.25, "y": 24.9 },
@@ -133,11 +138,16 @@
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
                 {
-                    "type": "rectangle",
-                    "width": 5,
-                    "height": 3,
-                    "x": 0.5,
-                    "y": 0.5
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 5, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 3 },
+                    "thickness": 1
                 }
             ],
             "position": { "x": 28, "y": 0 },
@@ -255,11 +265,16 @@
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
                 {
-                    "type": "rectangle",
-                    "width": 5,
-                    "height": 3,
-                    "x": 0.5,
-                    "y": 0.5
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 5, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 3 },
+                    "thickness": 1
                 }
             ],
             "position": { "x": 37.75, "y": 19.1 },
@@ -275,11 +290,16 @@
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
                 {
-                    "type": "rectangle",
-                    "width": 5,
-                    "height": 3,
-                    "x": 0.5,
-                    "y": 0.5
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 5, "y": 1 },
+                    "thickness": 1
+                },
+                {
+                    "type": "line",
+                    "start": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 3 },
+                    "thickness": 1
                 }
             ],
             "position": { "x": 32, "y": 38 },

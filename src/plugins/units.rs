@@ -153,23 +153,30 @@ fn base_in_zone_optional(pos: Vec2, base: &BaseShape, verts: Option<&[Vec2]>) ->
 }
 
 fn overlaps_any_terrain(pos: Vec2, base: &BaseShape, pieces: &[TerrainPiece]) -> bool {
+    use crate::types::terrain::TerrainShape;
     let rx = base.radius_x_inches();
     let ry = base.radius_y_inches();
+    let d = 0.707_f32;
+    let check_pts = [
+        pos,
+        pos + Vec2::new(rx, 0.0),
+        pos - Vec2::new(rx, 0.0),
+        pos + Vec2::new(0.0, ry),
+        pos - Vec2::new(0.0, ry),
+        pos + Vec2::new(rx * d, ry * d),
+        pos + Vec2::new(-rx * d, ry * d),
+        pos + Vec2::new(rx * d, -ry * d),
+        pos + Vec2::new(-rx * d, -ry * d),
+    ];
 
     for piece in pieces {
         if !piece.blocking {
             continue;
         }
         for shape in &piece.shapes {
-            // Check if base center + radius overlaps any shape using AABB approximation.
-            // For accuracy, check multiple points on the base perimeter.
-            let check_pts = [
-                pos,
-                pos + Vec2::new(rx, 0.0),
-                pos - Vec2::new(rx, 0.0),
-                pos + Vec2::new(0.0, ry),
-                pos - Vec2::new(0.0, ry),
-            ];
+            if !matches!(shape, TerrainShape::Line { .. }) {
+                continue; // footprints are passable; only walls block placement
+            }
             for &pt in &check_pts {
                 if point_in_shape(pt, shape, piece) {
                     return true;

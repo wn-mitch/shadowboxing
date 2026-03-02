@@ -29,6 +29,7 @@ pub fn run_analysis(
             let verts = visibility_polygon(src, &edges);
             verts_to_geo_polygon(verts)
         })
+        .filter_map(|p| p)
         .collect();
 
     // Union all polygons into one MultiPolygon.

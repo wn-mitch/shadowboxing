@@ -74,7 +74,7 @@ fn spawn_terrain_piece(
 
     for (shape_idx, shape) in piece.shapes.iter().enumerate() {
         let color = shape_color(piece.blocking, shape_idx == 0);
-        let child = spawn_shape_mesh(commands, meshes, materials, shape, color);
+        let child = spawn_shape_mesh(commands, meshes, materials, shape, color, shape_idx);
         commands.entity(parent).add_child(child);
     }
 
@@ -153,13 +153,15 @@ fn spawn_shape_mesh(
     materials: &mut ResMut<Assets<ColorMaterial>>,
     shape: &TerrainShape,
     color: Color,
+    shape_idx: usize,
 ) -> Entity {
     let (mesh, offset, angle) = shape_to_mesh(shape);
+    let z = shape_idx as f32 * 0.01;
     commands
         .spawn((
             Mesh2d(meshes.add(mesh)),
             MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-            Transform::from_xyz(offset.x, offset.y, 0.0)
+            Transform::from_xyz(offset.x, offset.y, z)
                 .with_rotation(Quat::from_rotation_z(angle)),
             PickingBehavior::IGNORE,
         ))

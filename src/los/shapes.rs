@@ -42,7 +42,14 @@ pub fn point_in_shape_local(local: Vec2, shape: &TerrainShape) -> bool {
             point_in_polygon_local(local, &verts)
         }
         TerrainShape::Circle { radius } => local.length_squared() <= radius * radius,
-        TerrainShape::Line { .. } => false,
+        TerrainShape::Line { start, end, thickness } => {
+            let s = Vec2::new(start.x, -start.y);
+            let e = Vec2::new(end.x, -end.y);
+            let dir = (e - s).normalize_or_zero();
+            let perp = Vec2::new(-dir.y, dir.x) * (thickness / 2.0);
+            let verts = [s + perp, e + perp, e - perp, s - perp];
+            point_in_polygon_local(local, &verts)
+        }
     }
 }
 

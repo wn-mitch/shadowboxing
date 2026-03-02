@@ -130,17 +130,21 @@ fn deduplicate_verts(verts: &mut Vec<Vec2>) {
 }
 
 /// Convert a `Vec<Vec2>` polygon to a `geo::Polygon<f64>`.
-pub fn verts_to_geo_polygon(verts: Vec<Vec2>) -> geo::Polygon<f64> {
+/// Returns `None` if there are fewer than 3 vertices (degenerate polygon).
+pub fn verts_to_geo_polygon(verts: Vec<Vec2>) -> Option<geo::Polygon<f64>> {
     use geo::{Coord, LineString, Polygon};
-    let coords: Vec<Coord<f64>> = verts
+    if verts.len() < 3 {
+        return None;
+    }
+    let mut coords: Vec<Coord<f64>> = verts
         .iter()
         .map(|v| Coord {
             x: v.x as f64,
             y: v.y as f64,
         })
         .collect();
-    let line_string = LineString(coords);
-    Polygon::new(line_string, vec![])
+    coords.push(coords[0]); // close the ring
+    Some(Polygon::new(LineString(coords), vec![]))
 }
 
 #[cfg(test)]
