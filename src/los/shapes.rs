@@ -32,13 +32,13 @@ fn apply_mirror(v: Vec2, mirror: &Mirror) -> Vec2 {
 /// `Line` shapes are never considered "containment" regions (they're wall edges).
 pub fn point_in_shape_local(local: Vec2, shape: &TerrainShape) -> bool {
     match shape {
-        TerrainShape::Rectangle { width, height } => {
+        TerrainShape::Rectangle { width, height, .. } => {
             let half_w = width / 2.0;
             let half_h = height / 2.0;
             local.x >= -half_w && local.x <= half_w && local.y >= -half_h && local.y <= half_h
         }
         TerrainShape::Polygon { points } => {
-            let verts: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, p.y)).collect();
+            let verts: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, -p.y)).collect();
             point_in_polygon_local(local, &verts)
         }
         TerrainShape::Circle { radius } => local.length_squared() <= radius * radius,
@@ -113,7 +113,7 @@ pub fn extract_obstacle_edges(
 /// Circle becomes a 32-gon.
 fn shape_local_vertices(shape: &TerrainShape) -> Vec<Vec2> {
     match shape {
-        TerrainShape::Rectangle { width, height } => {
+        TerrainShape::Rectangle { width, height, .. } => {
             let hw = width / 2.0;
             let hh = height / 2.0;
             vec![
@@ -124,7 +124,7 @@ fn shape_local_vertices(shape: &TerrainShape) -> Vec<Vec2> {
             ]
         }
         TerrainShape::Polygon { points } => {
-            points.iter().map(|p| Vec2::new(p.x, p.y)).collect()
+            points.iter().map(|p| Vec2::new(p.x, -p.y)).collect()
         }
         TerrainShape::Circle { radius } => {
             const SEGMENTS: usize = 32;
@@ -140,8 +140,9 @@ fn shape_local_vertices(shape: &TerrainShape) -> Vec<Vec2> {
             end,
             thickness,
         } => {
-            let s = Vec2::new(start.x, start.y);
-            let e = Vec2::new(end.x, end.y);
+            // JSON line coords are y-down local; flip y for Bevy.
+            let s = Vec2::new(start.x, -start.y);
+            let e = Vec2::new(end.x, -end.y);
             let dir = (e - s).normalize_or_zero();
             let perp = Vec2::new(-dir.y, dir.x) * (thickness / 2.0);
             vec![s + perp, e + perp, e - perp, s - perp]
@@ -178,17 +179,21 @@ mod tests {
     use super::*;
     use crate::types::terrain::{JsonVec2, Mirror, TerrainPiece, TerrainShape};
 
-    fn make_piece(rotation: f32, mirror: Mirror, pos: Vec2) -> TerrainPiece {
+    fn make_piece(rotation: f32, mirror: Mirror, bevy_pos: Vec2) -> TerrainPiece {
+        use crate::types::terrain::BOARD_HEIGHT;
         TerrainPiece {
             id: "test".to_string(),
             name: "Test".to_string(),
             shapes: vec![TerrainShape::Rectangle {
                 width: 4.0,
                 height: 2.0,
+                x: 0.0,
+                y: 0.0,
             }],
+            // Store as JSON y-down so that world_position() returns bevy_pos.
             position: JsonVec2 {
-                x: pos.x,
-                y: pos.y,
+                x: bevy_pos.x,
+                y: BOARD_HEIGHT - bevy_pos.y,
             },
             rotation,
             mirror,

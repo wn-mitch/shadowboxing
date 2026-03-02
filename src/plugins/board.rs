@@ -1,14 +1,35 @@
+use bevy::math::UVec2;
 use bevy::prelude::*;
-use bevy::render::camera::ScalingMode;
+use bevy::render::camera::{ScalingMode, Viewport};
+use bevy::window::PrimaryWindow;
 
-use crate::resources::BoardConfig;
+use crate::resources::{BoardConfig, PanelWidth};
 
 pub struct BoardPlugin;
 
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_board);
+        app.add_systems(Startup, setup_board)
+            .add_systems(Update, update_camera_viewport);
     }
+}
+
+fn update_camera_viewport(
+    mut cameras: Query<&mut Camera>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    panel_width: Res<PanelWidth>,
+) {
+    let Ok(window) = windows.get_single() else { return };
+    let Ok(mut camera) = cameras.get_single_mut() else { return };
+    let scale = window.scale_factor();
+    let phys_panel_w = (panel_width.0 * scale).round() as u32;
+    let phys_w = window.physical_width();
+    let phys_h = window.physical_height();
+    camera.viewport = Some(Viewport {
+        physical_position: UVec2::new(phys_panel_w, 0),
+        physical_size: UVec2::new(phys_w.saturating_sub(phys_panel_w), phys_h),
+        depth: 0.0..1.0,
+    });
 }
 
 fn setup_board(

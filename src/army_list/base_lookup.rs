@@ -59,6 +59,15 @@ impl BaseDatabase {
         }
     }
 
+    /// Returns true if `model_name` is a real model variant for `unit_name` in the database.
+    pub fn has_model(&self, unit_name: &str, model_name: &str) -> bool {
+        let Some(datasheet_id) = self.name_to_id.get(&unit_name.to_lowercase()) else {
+            return false;
+        };
+        self.models
+            .contains_key(&(datasheet_id.clone(), model_name.to_lowercase()))
+    }
+
     /// Look up a unit by name and model variant name.
     /// Returns (BaseShape, movement_inches).
     pub fn lookup(&self, unit_name: &str, model_name: &str) -> (BaseShape, Option<f32>) {
@@ -196,6 +205,16 @@ fn try_parse_circle(s: &str) -> Option<BaseShape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_model_rejects_wargear() {
+        let base_db = BaseDatabase::load(
+            include_str!("../../assets/Datasheets.json"),
+            include_str!("../../assets/Datasheets_models.json"),
+        );
+        assert!(!base_db.has_model("Rotigus", "Gnarlrod"));
+        assert!(!base_db.has_model("Skarbrand", "Bellow of endless fury"));
+    }
 
     #[test]
     fn parse_simple_circle() {

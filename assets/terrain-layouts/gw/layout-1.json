@@ -101,10 +101,9 @@
                     "thickness": 1
                 }
             ],
-            "position": { "x": 22, "y": 40 },
+            "position": { "x": 22, "y": 28 },
             "blocking": true,
             "rotation": 90,
-            "mirrored": true,
             "height": 5,
             "category": "structure"
         },
@@ -113,10 +112,16 @@
             "name": "Center Small Box",
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
-                { "type": "rectangle", "width": 5, "height": 3 }
+                {
+                    "type": "rectangle",
+                    "width": 5,
+                    "height": 3,
+                    "x": 0.5,
+                    "y": 0.5
+                }
             ],
             "position": { "x": 22.25, "y": 24.9 },
-            "mirrored": true,
+            "mirror": "horizontal",
             "rotation": 135,
             "blocking": true,
             "height": 4,
@@ -127,10 +132,16 @@
             "name": "Center Box Top",
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
-                { "type": "rectangle", "width": 5, "height": 3 }
+                {
+                    "type": "rectangle",
+                    "width": 5,
+                    "height": 3,
+                    "x": 0.5,
+                    "y": 0.5
+                }
             ],
             "position": { "x": 28, "y": 0 },
-            "mirrored": true,
+            "mirror": "horizontal",
             "rotation": 270,
             "blocking": true,
             "height": 4,
@@ -162,7 +173,7 @@
         },
         {
             "id": "piece-8",
-            "name": "Home Big Ruin L (Mirrored)",
+            "name": "Home Big Ruin L (Msirrored)",
             "shapes": [
                 { "type": "rectangle", "width": 12, "height": 6 },
                 {
@@ -232,10 +243,9 @@
                     "thickness": 1
                 }
             ],
-            "position": { "x": 38, "y": 4 },
+            "position": { "x": 38, "y": 16 },
             "blocking": true,
             "rotation": 270,
-            "mirrored": true,
             "height": 5,
             "category": "structure"
         },
@@ -244,11 +254,17 @@
             "name": "Center Small Box (Mirrored)",
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
-                { "type": "rectangle", "width": 5, "height": 3 }
+                {
+                    "type": "rectangle",
+                    "width": 5,
+                    "height": 3,
+                    "x": 0.5,
+                    "y": 0.5
+                }
             ],
             "position": { "x": 37.75, "y": 19.1 },
+            "mirror": "horizontal",
             "rotation": 315,
-            "mirrored": true,
             "blocking": true,
             "height": 4,
             "category": "ruins"
@@ -258,11 +274,16 @@
             "name": "Center Box Top (Mirrored)",
             "shapes": [
                 { "type": "rectangle", "width": 6, "height": 4 },
-                { "type": "rectangle", "width": 5, "height": 3 }
+                {
+                    "type": "rectangle",
+                    "width": 5,
+                    "height": 3,
+                    "x": 0.5,
+                    "y": 0.5
+                }
             ],
-            "position": { "x": 32, "y": 44 },
+            "position": { "x": 32, "y": 38 },
             "rotation": 90,
-            "mirrored": true,
             "blocking": true,
             "height": 4,
             "category": "ruins"

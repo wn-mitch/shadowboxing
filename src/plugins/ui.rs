@@ -7,7 +7,7 @@ use crate::events::{
     DeleteUnit, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
     TriggerAnalysis,
 };
-use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, TerrainLayouts};
+use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, PanelWidth, TerrainLayouts};
 use crate::types::units::{ArmyUnit, Player};
 use crate::types::visibility::{AnalysisMode, VisibilityState};
 
@@ -16,6 +16,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
+            .init_resource::<PanelWidth>()
             .add_systems(Update, draw_ui_panel);
     }
 }
@@ -78,10 +79,11 @@ fn draw_ui_panel(
     mut ev_trigger: EventWriter<TriggerAnalysis>,
     mut ev_spawn: EventWriter<SpawnUnit>,
     mut ev_delete: EventWriter<DeleteUnit>,
+    mut panel_width: ResMut<PanelWidth>,
 ) {
     let ctx = contexts.ctx_mut();
 
-    egui::SidePanel::left("control_panel")
+    let panel = egui::SidePanel::left("control_panel")
         .min_width(240.0)
         .max_width(300.0)
         .show(ctx, |ui| {
@@ -116,6 +118,7 @@ fn draw_ui_panel(
                 ),
             }
         });
+    panel_width.0 = panel.response.rect.width();
 }
 
 fn draw_setup_tab(
@@ -189,7 +192,21 @@ fn draw_army_tab(
         let mut color_idx = 0;
 
         for unit in parsed {
-            for (model_name, count) in &unit.model_counts {
+            let valid_models: Vec<(String, u32)> = unit
+                .model_counts
+                .iter()
+                .filter(|(model_name, _)| base_db.has_model(&unit.name, model_name))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+
+            // If no bullet lines matched real model variants, treat the unit as a single model.
+            let models_to_spawn: Vec<(String, u32)> = if valid_models.is_empty() {
+                vec![(unit.name.clone(), 1)]
+            } else {
+                valid_models
+            };
+
+            for (model_name, count) in &models_to_spawn {
                 let (base_shape, movement) = base_db.lookup(&unit.name, model_name);
                 let color = UNIT_COLORS[color_idx % UNIT_COLORS.len()];
                 army_units.push(ArmyUnit {

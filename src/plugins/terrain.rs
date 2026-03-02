@@ -40,8 +40,8 @@ fn on_load_terrain_layout(
             }
         };
 
-        for piece in &layout.pieces {
-            spawn_terrain_piece(&mut commands, &mut meshes, &mut materials, piece);
+        for (i, piece) in layout.pieces.iter().enumerate() {
+            spawn_terrain_piece(&mut commands, &mut meshes, &mut materials, piece, i + 1);
         }
     }
 }
@@ -51,14 +51,20 @@ fn spawn_terrain_piece(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
     piece: &TerrainPiece,
+    piece_index: usize,
 ) {
     let pos = piece.world_position();
 
-    // Parent entity at piece position + rotation.
+    // Parent entity at piece position + rotation (JSON CW → negate for Bevy y-up CCW).
     let parent = commands
         .spawn((
             Transform::from_xyz(pos.x, pos.y, 2.0)
-                .with_rotation(Quat::from_rotation_z(piece.rotation.to_radians())),
+                .with_rotation(Quat::from_rotation_z(-piece.rotation.to_radians()))
+                .with_scale(match piece.mirror {
+                    crate::types::terrain::Mirror::Horizontal => Vec3::new(-1.0, 1.0, 1.0),
+                    crate::types::terrain::Mirror::Vertical => Vec3::new(1.0, -1.0, 1.0),
+                    crate::types::terrain::Mirror::None => Vec3::ONE,
+                }),
             Visibility::Visible,
             TerrainPieceMarker {
                 piece_id: piece.id.clone(),
@@ -71,6 +77,60 @@ fn spawn_terrain_piece(
         let child = spawn_shape_mesh(commands, meshes, materials, shape, color);
         commands.entity(parent).add_child(child);
     }
+
+    // Label at the first shape's visual center.
+    let label_offset = match piece.shapes.first() {
+        Some(TerrainShape::Rectangle { width, height, .. }) => {
+            Vec2::new(width / 2.0, -height / 2.0)
+        }
+        _ => Vec2::ZERO,
+    };
+    let label = commands
+        .spawn((
+            Text2d::new(piece.name.clone()),
+            TextFont {
+                font_size: 10.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            Transform::from_xyz(label_offset.x, label_offset.y, 0.5)
+                .with_scale(Vec3::splat(0.08)),
+        ))
+        .id();
+    commands.entity(parent).add_child(label);
+
+    // Pink origin dot with debug label at local (0, 0) — marks the JSON top-left-corner anchor.
+    let mirror_str = match piece.mirror {
+        crate::types::terrain::Mirror::None => "M:none",
+        crate::types::terrain::Mirror::Horizontal => "M:horiz",
+        crate::types::terrain::Mirror::Vertical => "M:vert",
+    };
+    let debug_text = format!(
+        "({:.1},{:.1}) {:.0}° {}",
+        pos.x, pos.y, piece.rotation, mirror_str
+    );
+
+    let dot = commands
+        .spawn((
+            Mesh2d(meshes.add(Mesh::from(Circle::new(0.25)))),
+            MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(
+                1.0, 0.08, 0.58,
+            )))),
+            Transform::from_xyz(0.0, 0.0, 3.0),
+        ))
+        .id();
+    commands.entity(parent).add_child(dot);
+
+    // Number label spawned at world position so it doesn't rotate with the piece.
+    commands.spawn((
+        Text2d::new(format!("{}\n{}", piece_index, debug_text)),
+        TextFont {
+            font_size: 10.0,
+            ..default()
+        },
+        TextColor(Color::BLACK),
+        Transform::from_xyz(pos.x + 0.3, pos.y, 3.5).with_scale(Vec3::splat(0.08)),
+    ));
 }
 
 fn shape_color(blocking: bool, is_footprint: bool) -> Color {
@@ -93,65 +153,74 @@ fn spawn_shape_mesh(
     shape: &TerrainShape,
     color: Color,
 ) -> Entity {
-    let (mesh, offset) = shape_to_mesh(shape);
+    let (mesh, offset, angle) = shape_to_mesh(shape);
     commands
         .spawn((
             Mesh2d(meshes.add(mesh)),
             MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-            Transform::from_xyz(offset.x, offset.y, 0.0),
+            Transform::from_xyz(offset.x, offset.y, 0.0)
+                .with_rotation(Quat::from_rotation_z(angle)),
         ))
         .id()
 }
 
-fn shape_to_mesh(shape: &TerrainShape) -> (Mesh, Vec2) {
+/// Returns (mesh, local_offset, z_rotation_radians).
+/// Local offset is in the parent's (piece's) coordinate frame.
+fn shape_to_mesh(shape: &TerrainShape) -> (Mesh, Vec2, f32) {
     match shape {
-        TerrainShape::Rectangle { width, height } => {
-            (Rectangle::new(*width, *height).into(), Vec2::ZERO)
+        TerrainShape::Rectangle { width, height, x, y } => {
+            // JSON pivot is the top-left corner of the piece. In Bevy y-up, the rectangle
+            // center sits at (x + half_width, -y - half_height) relative to that corner.
+            (
+                Rectangle::new(*width, *height).into(),
+                Vec2::new(x + width / 2.0, -y - height / 2.0),
+                0.0,
+            )
         }
         TerrainShape::Polygon { points } => {
-            let verts: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, p.y)).collect();
-            (polygon_mesh(&verts), Vec2::ZERO)
+            // JSON polygon vertices are y-down local coords; flip y for Bevy.
+            let verts: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, -p.y)).collect();
+            (polygon_mesh_earcut(&verts), Vec2::ZERO, 0.0)
         }
-        TerrainShape::Circle { radius } => {
-            (Circle::new(*radius).into(), Vec2::ZERO)
-        }
+        TerrainShape::Circle { radius } => (Circle::new(*radius).into(), Vec2::ZERO, 0.0),
         TerrainShape::Line {
             start,
             end,
             thickness,
         } => {
-            let s = Vec2::new(start.x, start.y);
-            let e = Vec2::new(end.x, end.y);
+            // JSON line endpoints are y-down local coords; flip y for Bevy.
+            let s = Vec2::new(start.x, -start.y);
+            let e = Vec2::new(end.x, -end.y);
             let center = (s + e) / 2.0;
             let length = (e - s).length();
             let angle = (e - s).to_angle();
-            // We'll return a rectangle mesh; caller handles the transform.
-            // We encode the angle into a separate Z-rotation on the child entity.
-            let _ = angle; // handled below
-            (
-                Rectangle::new(length, *thickness).into(),
-                center,
-            )
+            (Rectangle::new(length, *thickness).into(), center, angle)
         }
     }
 }
 
-/// Build a `Mesh` from a polygon by ear-cut triangulation.
-fn polygon_mesh(verts: &[Vec2]) -> Mesh {
+/// Build a `Mesh` from a polygon using earcut triangulation (handles concave shapes).
+fn polygon_mesh_earcut(verts: &[Vec2]) -> Mesh {
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     use bevy::render::render_asset::RenderAssetUsages;
+    use geo::{Coord, LineString, Polygon, TriangulateEarcut};
 
-    let positions: Vec<[f32; 3]> = verts.iter().map(|v| [v.x, v.y, 0.0]).collect();
-    let normals: Vec<[f32; 3]> = vec![[0.0, 0.0, 1.0]; verts.len()];
-    let uvs: Vec<[f32; 2]> = verts.iter().map(|v| [v.x, v.y]).collect();
+    let exterior: Vec<Coord<f64>> = verts
+        .iter()
+        .map(|v| Coord { x: v.x as f64, y: v.y as f64 })
+        .collect();
+    let geo_poly = Polygon::new(LineString::new(exterior), vec![]);
+    let triangles = geo_poly.earcut_triangles();
 
-    // Simple fan triangulation (works for convex polygons; fine for terrain shapes).
-    let mut indices = Vec::new();
-    for i in 1..verts.len() as u32 - 1 {
-        indices.push(0);
-        indices.push(i);
-        indices.push(i + 1);
-    }
+    let positions: Vec<[f32; 3]> = triangles
+        .iter()
+        .flat_map(|tri| [tri.0, tri.1, tri.2])
+        .map(|c| [c.x as f32, c.y as f32, 0.0])
+        .collect();
+    let n = positions.len();
+    let normals = vec![[0.0f32, 0.0, 1.0]; n];
+    let uvs: Vec<[f32; 2]> = positions.iter().map(|p| [p[0], p[1]]).collect();
+    let indices: Vec<u32> = (0..n as u32).collect();
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);

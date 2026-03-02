@@ -33,12 +33,13 @@ mod tests {
     use super::*;
     use crate::types::terrain::{JsonVec2, Mirror, TerrainShape};
 
-    fn rect_piece(id: &str, pos: Vec2, w: f32, h: f32) -> TerrainPiece {
+    fn rect_piece(id: &str, bevy_pos: Vec2, w: f32, h: f32) -> TerrainPiece {
+        use crate::types::terrain::BOARD_HEIGHT;
         TerrainPiece {
             id: id.to_string(),
             name: id.to_string(),
-            shapes: vec![TerrainShape::Rectangle { width: w, height: h }],
-            position: JsonVec2 { x: pos.x, y: pos.y },
+            shapes: vec![TerrainShape::Rectangle { width: w, height: h, x: 0.0, y: 0.0 }],
+            position: JsonVec2 { x: bevy_pos.x, y: BOARD_HEIGHT - bevy_pos.y },
             rotation: 0.0,
             mirror: Mirror::None,
             blocking: true,

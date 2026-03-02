@@ -1,6 +1,9 @@
 use bevy::math::Vec2;
 use serde::Deserialize;
 
+/// Board height in world units. JSON y is flipped at the data boundary.
+pub const BOARD_HEIGHT: f32 = 44.0;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerrainLayout {
@@ -32,7 +35,7 @@ pub struct TerrainPiece {
 
 impl TerrainPiece {
     pub fn world_position(&self) -> Vec2 {
-        Vec2::new(self.position.x, self.position.y)
+        Vec2::new(self.position.x, BOARD_HEIGHT - self.position.y)
     }
 }
 
@@ -42,6 +45,10 @@ pub enum TerrainShape {
     Rectangle {
         width: f32,
         height: f32,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
     },
     Polygon {
         points: Vec<JsonVec2>,

@@ -29,3 +29,12 @@ pub struct DeploymentPatterns(pub Vec<DeploymentPattern>);
 
 #[derive(Resource, Default)]
 pub struct ActivePattern(pub Option<String>);
+
+#[derive(Resource)]
+pub struct PanelWidth(pub f32);
+
+impl Default for PanelWidth {
+    fn default() -> Self {
+        Self(256.0)
+    }
+}

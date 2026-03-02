@@ -68,17 +68,24 @@ fn parse_hex_color(hex: &str, alpha: f32) -> Color {
 fn polygon_mesh(verts: &[Vec2]) -> Mesh {
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     use bevy::render::render_asset::RenderAssetUsages;
+    use geo::{Coord, LineString, Polygon, TriangulateEarcut};
 
-    let positions: Vec<[f32; 3]> = verts.iter().map(|v| [v.x, v.y, 0.0]).collect();
-    let normals = vec![[0.0f32, 0.0, 1.0]; verts.len()];
-    let uvs: Vec<[f32; 2]> = verts.iter().map(|v| [v.x, v.y]).collect();
+    let exterior: Vec<Coord<f64>> = verts
+        .iter()
+        .map(|v| Coord { x: v.x as f64, y: v.y as f64 })
+        .collect();
+    let geo_poly = Polygon::new(LineString::new(exterior), vec![]);
+    let triangles = geo_poly.earcut_triangles();
 
-    let mut indices = Vec::new();
-    for i in 1..verts.len() as u32 - 1 {
-        indices.push(0);
-        indices.push(i);
-        indices.push(i + 1);
-    }
+    let positions: Vec<[f32; 3]> = triangles
+        .iter()
+        .flat_map(|tri| [tri.0, tri.1, tri.2])
+        .map(|c| [c.x as f32, c.y as f32, 0.0])
+        .collect();
+    let n = positions.len();
+    let normals = vec![[0.0f32, 0.0, 1.0]; n];
+    let uvs: Vec<[f32; 2]> = positions.iter().map(|p| [p[0], p[1]]).collect();
+    let indices: Vec<u32> = (0..n as u32).collect();
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);

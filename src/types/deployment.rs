@@ -24,7 +24,8 @@ pub struct DeploymentZone {
 
 impl DeploymentZone {
     pub fn world_offset(&self) -> Vec2 {
-        Vec2::new(self.position.x, self.position.y)
+        use crate::types::terrain::BOARD_HEIGHT;
+        Vec2::new(self.position.x, BOARD_HEIGHT - self.position.y)
     }
 
     pub fn to_player(&self) -> Player {
@@ -41,11 +42,11 @@ impl DeploymentZone {
             ZoneShape::Rectangle { width, height } => vec![
                 offset,
                 offset + Vec2::new(*width, 0.0),
-                offset + Vec2::new(*width, *height),
-                offset + Vec2::new(0.0, *height),
+                offset + Vec2::new(*width, -*height),
+                offset + Vec2::new(0.0, -*height),
             ],
             ZoneShape::Polygon { points } => {
-                points.iter().map(|p| offset + Vec2::new(p.x, p.y)).collect()
+                points.iter().map(|p| offset + Vec2::new(p.x, -p.y)).collect()
             }
         }
     }
