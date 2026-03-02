@@ -21,7 +21,7 @@ impl Plugin for UiPlugin {
     }
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct UiState {
     active_tab: UiTab,
     /// Raw text from the army list paste box.
@@ -30,6 +30,20 @@ struct UiState {
     army_units: Vec<ArmyUnit>,
     movement_override: f32,
     selected_player: SelectedPlayer,
+    selected_analysis_mode: AnalysisMode,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            active_tab: UiTab::default(),
+            army_list_text: String::new(),
+            army_units: Vec::new(),
+            movement_override: 0.0,
+            selected_player: SelectedPlayer::default(),
+            selected_analysis_mode: AnalysisMode::ZoneCoverage,
+        }
+    }
 }
 
 #[derive(Default, PartialEq, Eq, Clone, Copy)]
@@ -274,26 +288,27 @@ fn draw_analysis_tab(
 ) {
     ui.label("Analysis Mode:");
     ui.horizontal(|ui| {
-        // Store mode selection in vis_state (via a local mirror).
-        // We use a simple bool for now.
-        let mut mode = vis_state.mode;
         if ui
-            .selectable_label(mode == AnalysisMode::ZoneCoverage, "Zone Coverage")
+            .selectable_label(
+                ui_state.selected_analysis_mode == AnalysisMode::ZoneCoverage,
+                "Zone Coverage",
+            )
             .clicked()
         {
-            mode = AnalysisMode::ZoneCoverage;
+            ui_state.selected_analysis_mode = AnalysisMode::ZoneCoverage;
         }
         if ui
-            .selectable_label(mode == AnalysisMode::UnitPositions, "Unit Positions")
+            .selectable_label(
+                ui_state.selected_analysis_mode == AnalysisMode::UnitPositions,
+                "Unit Positions",
+            )
             .clicked()
         {
-            mode = AnalysisMode::UnitPositions;
+            ui_state.selected_analysis_mode = AnalysisMode::UnitPositions;
         }
-        // Can't mutate vis_state here (immutable ref), so we track in ui_state.
-        let _ = mode; // Used by the Run button below.
     });
 
-    if vis_state.mode == AnalysisMode::UnitPositions {
+    if ui_state.selected_analysis_mode == AnalysisMode::UnitPositions {
         ui.add_space(4.0);
         ui.label("Movement override (inches):");
         ui.add(egui::Slider::new(&mut ui_state.movement_override, 0.0..=24.0).text("\""));
@@ -309,7 +324,7 @@ fn draw_analysis_tab(
 
     let btn = ui.add_enabled(!vis_state.analyzing, egui::Button::new(button_text));
     if btn.clicked() {
-        ev_trigger.send(TriggerAnalysis(vis_state.mode));
+        ev_trigger.send(TriggerAnalysis(ui_state.selected_analysis_mode));
     }
 
     if let Some(area) = vis_state

@@ -117,6 +117,7 @@ fn spawn_terrain_piece(
                 1.0, 0.08, 0.58,
             )))),
             Transform::from_xyz(0.0, 0.0, 3.0),
+            PickingBehavior::IGNORE,
         ))
         .id();
     commands.entity(parent).add_child(dot);
@@ -160,6 +161,7 @@ fn spawn_shape_mesh(
             MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
             Transform::from_xyz(offset.x, offset.y, 0.0)
                 .with_rotation(Quat::from_rotation_z(angle)),
+            PickingBehavior::IGNORE,
         ))
         .id()
 }

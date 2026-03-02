@@ -1,0 +1,43 @@
+{
+    "id": "sandbox-single-ruin",
+    "name": "Test: Center Ruin",
+    "source": "sandbox",
+    "version": "1.0.0",
+    "boardWidth": 60,
+    "boardHeight": 44,
+    "pieces": [
+        {
+            "id": "piece-1",
+            "name": "Center Ruin",
+            "shapes": [
+                { "type": "rectangle", "width": 10, "height": 6 }
+            ],
+            "position": { "x": 30, "y": 22 },
+            "rotation": 0,
+            "blocking": true,
+            "height": 5,
+            "category": "ruins"
+        }
+    ],
+    "deploymentZones": [
+        {
+            "name": "Attacker",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 0 },
+            "color": "#3b82f6",
+            "labelPosition": { "x": 54, "y": 2 }
+        },
+        {
+            "name": "Opponent",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 32 },
+            "color": "#ef4444",
+            "labelPosition": { "x": 2, "y": 42 }
+        }
+    ],
+    "metadata": {
+        "description": "Single blocking ruin at board center for unit-behind-terrain LOS testing",
+        "missionType": "Sandbox",
+        "created": "2026-03-02"
+    }
+}

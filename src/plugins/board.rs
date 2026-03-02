@@ -25,11 +25,18 @@ fn update_camera_viewport(
     let phys_panel_w = (panel_width.0 * scale).round() as u32;
     let phys_w = window.physical_width();
     let phys_h = window.physical_height();
-    camera.viewport = Some(Viewport {
-        physical_position: UVec2::new(phys_panel_w, 0),
-        physical_size: UVec2::new(phys_w.saturating_sub(phys_panel_w), phys_h),
-        depth: 0.0..1.0,
+    let new_pos = UVec2::new(phys_panel_w, 0);
+    let new_size = UVec2::new(phys_w.saturating_sub(phys_panel_w), phys_h);
+    let needs_update = camera.viewport.as_ref().map_or(true, |v| {
+        v.physical_position != new_pos || v.physical_size != new_size
     });
+    if needs_update {
+        camera.viewport = Some(Viewport {
+            physical_position: new_pos,
+            physical_size: new_size,
+            depth: 0.0..1.0,
+        });
+    }
 }
 
 fn setup_board(
@@ -58,6 +65,7 @@ fn setup_board(
         MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::srgb(0.86, 0.82, 0.72)))),
         Transform::from_xyz(board.width / 2.0, board.height / 2.0, 0.0),
         BoardBackground,
+        PickingBehavior::IGNORE,
     ));
 
     // Grid lines.
@@ -88,6 +96,7 @@ fn spawn_grid(
             Mesh2d(meshes.add(Rectangle::new(w, board.height))),
             MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
             Transform::from_xyz(x, board.height / 2.0, 0.1),
+            PickingBehavior::IGNORE,
         ));
         x += 1.0;
     }
@@ -102,6 +111,7 @@ fn spawn_grid(
             Mesh2d(meshes.add(Rectangle::new(board.width, h))),
             MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
             Transform::from_xyz(board.width / 2.0, y, 0.1),
+            PickingBehavior::IGNORE,
         ));
         y += 1.0;
     }

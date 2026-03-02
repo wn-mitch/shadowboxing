@@ -59,6 +59,7 @@ fn main() {
             UnitsPlugin,
             VisibilityPlugin,
             UiPlugin,
+            bevy::picking::mesh_picking::MeshPickingPlugin,
         ))
         .add_systems(Startup, load_static_data)
         .run();
@@ -71,13 +72,30 @@ fn load_static_data(
     mut ev_load_pattern: EventWriter<LoadDeploymentPattern>,
 ) {
     // Terrain layouts.
-    let layout: TerrainLayout = serde_json::from_str(include_str!(
+    let layout_gw: TerrainLayout = serde_json::from_str(include_str!(
         "../assets/terrain-layouts/gw/layout-1.json"
     ))
     .expect("Failed to parse layout-1.json");
+    let layout_empty: TerrainLayout = serde_json::from_str(include_str!(
+        "../assets/terrain-layouts/sandbox/empty.json"
+    ))
+    .expect("Failed to parse sandbox/empty.json");
+    let layout_ruin: TerrainLayout = serde_json::from_str(include_str!(
+        "../assets/terrain-layouts/sandbox/single-ruin.json"
+    ))
+    .expect("Failed to parse sandbox/single-ruin.json");
+    let layout_walls: TerrainLayout = serde_json::from_str(include_str!(
+        "../assets/terrain-layouts/sandbox/ruin-with-walls.json"
+    ))
+    .expect("Failed to parse sandbox/ruin-with-walls.json");
 
-    let layout_id = layout.id.clone();
-    commands.insert_resource(TerrainLayouts(vec![layout]));
+    let layout_id = layout_gw.id.clone();
+    commands.insert_resource(TerrainLayouts(vec![
+        layout_gw,
+        layout_empty,
+        layout_ruin,
+        layout_walls,
+    ]));
 
     // Deployment patterns.
     let patterns: DeploymentPatternList = serde_json::from_str(include_str!(

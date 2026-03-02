@@ -1,0 +1,30 @@
+{
+    "id": "sandbox-empty",
+    "name": "Test: Empty Board",
+    "source": "sandbox",
+    "version": "1.0.0",
+    "boardWidth": 60,
+    "boardHeight": 44,
+    "pieces": [],
+    "deploymentZones": [
+        {
+            "name": "Attacker",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 0 },
+            "color": "#3b82f6",
+            "labelPosition": { "x": 54, "y": 2 }
+        },
+        {
+            "name": "Opponent",
+            "shape": { "type": "rectangle", "width": 60, "height": 12 },
+            "position": { "x": 0, "y": 32 },
+            "color": "#ef4444",
+            "labelPosition": { "x": 2, "y": 42 }
+        }
+    ],
+    "metadata": {
+        "description": "Empty board for baseline LOS testing",
+        "missionType": "Sandbox",
+        "created": "2026-03-02"
+    }
+}

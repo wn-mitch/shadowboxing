@@ -230,21 +230,6 @@ fn handle_drag(
         .map(|l| l.pieces.clone())
         .unwrap_or_default();
 
-    // Get camera scale to convert pixel delta to world delta.
-    let world_per_pixel = camera_q
-        .get_single()
-        .map(|(cam, cam_gt)| {
-            // Use camera viewport rect to compute scale.
-            cam.physical_viewport_size()
-                .map(|vp| {
-                    // The AutoMin projection ensures min_width inches fits in the viewport.
-                    // We can use the camera's logical viewport size.
-                    vp
-                })
-                .is_some()
-        })
-        .ok();
-
     for ev in drag_events.read() {
         let Ok((mut transform, mut unit_base)) = bases.get_mut(ev.target) else {
             continue;
