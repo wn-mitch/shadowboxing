@@ -70,15 +70,8 @@ impl SelectedPlayer {
     }
 }
 
-// Hard-coded colors for unit display (cycle through them).
-const UNIT_COLORS: &[Color] = &[
-    Color::srgb(0.2, 0.4, 0.8),
-    Color::srgb(0.8, 0.2, 0.2),
-    Color::srgb(0.2, 0.7, 0.3),
-    Color::srgb(0.8, 0.6, 0.0),
-    Color::srgb(0.6, 0.2, 0.8),
-    Color::srgb(0.1, 0.6, 0.8),
-];
+const ATTACKER_COLOR: Color = Color::srgb(0.85, 0.15, 0.15);
+const DEFENDER_COLOR: Color = Color::srgb(0.15, 0.35, 0.85);
 
 fn draw_ui_panel(
     mut contexts: EguiContexts,
@@ -202,8 +195,11 @@ fn draw_army_tab(
         );
 
         let player = ui_state.selected_player.to_player();
+        let color = match player {
+            Player::Attacker => ATTACKER_COLOR,
+            Player::Defender => DEFENDER_COLOR,
+        };
         let mut army_units = Vec::new();
-        let mut color_idx = 0;
 
         for unit in parsed {
             let valid_models: Vec<(String, u32)> = unit
@@ -222,7 +218,6 @@ fn draw_army_tab(
 
             for (model_name, count) in &models_to_spawn {
                 let (base_shape, movement) = base_db.lookup(&unit.name, model_name);
-                let color = UNIT_COLORS[color_idx % UNIT_COLORS.len()];
                 army_units.push(ArmyUnit {
                     unit_name: unit.name.clone(),
                     model_name: model_name.clone(),
@@ -232,7 +227,6 @@ fn draw_army_tab(
                     color,
                     player,
                 });
-                color_idx += 1;
             }
         }
         ui_state.army_units = army_units;

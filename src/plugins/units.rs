@@ -6,13 +6,16 @@ use crate::types::terrain::TerrainPiece;
 use crate::types::units::{BaseShape, Player, UnitBase};
 use crate::los::shapes::{extract_obstacle_edges, point_in_shape};
 
+#[derive(Component)]
+struct ZoneRingMarker;
+
 pub struct UnitsPlugin;
 
 impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (on_spawn_unit, handle_drag),
+            (on_spawn_unit, handle_drag, update_validity_indicators),
         );
     }
 }
@@ -103,7 +106,7 @@ fn find_valid_spawn_pos(
         let mut x = min_x + rx;
         while x <= max_x - rx {
             let pos = Vec2::new(x, y);
-            if point_in_polygon_optional(pos, zone_verts)
+            if base_in_zone_optional(pos, base, zone_verts)
                 && !overlaps_any_terrain(pos, base, pieces)
                 && pos.x >= rx
                 && pos.x <= board.width - rx
@@ -124,12 +127,29 @@ fn find_valid_spawn_pos(
     Vec2::new(board.width / 2.0, board.height / 2.0)
 }
 
-fn point_in_polygon_optional(p: Vec2, verts: Option<&[Vec2]>) -> bool {
-    let verts = match verts {
-        Some(v) => v,
-        None => return true,
-    };
-    crate::types::deployment::point_in_polygon_pub(p, verts)
+fn base_fully_in_zone(pos: Vec2, base: &BaseShape, verts: &[Vec2]) -> bool {
+    let rx = base.radius_x_inches();
+    let ry = base.radius_y_inches();
+    let d = 0.707_f32;
+    let check_pts = [
+        pos,
+        pos + Vec2::new(rx, 0.0),
+        pos - Vec2::new(rx, 0.0),
+        pos + Vec2::new(0.0, ry),
+        pos - Vec2::new(0.0, ry),
+        pos + Vec2::new(rx * d, ry * d),
+        pos + Vec2::new(-rx * d, ry * d),
+        pos + Vec2::new(rx * d, -ry * d),
+        pos + Vec2::new(-rx * d, -ry * d),
+    ];
+    check_pts.iter().all(|&p| crate::types::deployment::point_in_polygon_pub(p, verts))
+}
+
+fn base_in_zone_optional(pos: Vec2, base: &BaseShape, verts: Option<&[Vec2]>) -> bool {
+    match verts {
+        Some(v) => base_fully_in_zone(pos, base, v),
+        None => true,
+    }
 }
 
 fn overlaps_any_terrain(pos: Vec2, base: &BaseShape, pieces: &[TerrainPiece]) -> bool {
@@ -195,22 +215,90 @@ fn spawn_base(
         Ellipse::new(rx, ry).into()
     };
 
-    commands.spawn((
-        Mesh2d(meshes.add(mesh)),
-        MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
-        Transform::from_xyz(pos.x, pos.y, 4.0),
-        UnitBase {
-            unit_name: unit_name.to_string(),
-            model_name: model_name.to_string(),
-            base_shape: base_shape.clone(),
-            locked: false,
-            movement_inches,
-            player,
-            color,
-            last_valid_pos: pos,
-        },
-        PickingBehavior::default(),
-    ));
+    let ring_inner = rx.max(ry);
+    let ring = Annulus::new(ring_inner, ring_inner + 0.18);
+
+    commands
+        .spawn((
+            Mesh2d(meshes.add(mesh)),
+            MeshMaterial2d(materials.add(ColorMaterial::from_color(color))),
+            Transform::from_xyz(pos.x, pos.y, 4.0),
+            UnitBase {
+                unit_name: unit_name.to_string(),
+                model_name: model_name.to_string(),
+                base_shape: base_shape.clone(),
+                locked: false,
+                movement_inches,
+                player,
+                color,
+                last_valid_pos: pos,
+            },
+            PickingBehavior::default(),
+        ))
+        .with_children(|parent| {
+            // Zone violation ring (hidden by default).
+            parent.spawn((
+                Mesh2d(meshes.add(ring)),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(
+                    Color::srgba(1.0, 0.15, 0.15, 0.9),
+                ))),
+                Transform::from_xyz(0.0, 0.0, 0.15),
+                Visibility::Hidden,
+                ZoneRingMarker,
+            ));
+
+            // Center dot.
+            parent.spawn((
+                Mesh2d(meshes.add(Circle::new(0.1))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
+                Transform::from_xyz(0.0, 0.0, 0.1),
+            ));
+
+            // Name label.
+            parent.spawn((
+                Text2d::new(model_name.to_string()),
+                TextFont { font_size: 10.0, ..default() },
+                TextColor(Color::WHITE),
+                Transform::from_xyz(0.0, 0.0, 0.2).with_scale(Vec3::splat(0.08)),
+            ));
+        });
+}
+
+fn update_validity_indicators(
+    units: Query<(&UnitBase, &Transform, &Children)>,
+    mut rings: Query<&mut Visibility, With<ZoneRingMarker>>,
+    patterns: Res<DeploymentPatterns>,
+    active_pattern: Res<ActivePattern>,
+) {
+    let zones = active_pattern
+        .0
+        .as_ref()
+        .and_then(|id| patterns.0.iter().find(|p| &p.id == id))
+        .map(|p| p.zones.as_slice())
+        .unwrap_or(&[]);
+
+    for (unit_base, transform, children) in &units {
+        let pos = transform.translation.truncate();
+        let zone_verts = zones
+            .iter()
+            .find(|z| z.to_player() == unit_base.player)
+            .map(|z| z.world_vertices());
+
+        let in_zone = match zone_verts.as_deref() {
+            Some(verts) => base_fully_in_zone(pos, &unit_base.base_shape, verts),
+            None => true,
+        };
+
+        for &child in children.iter() {
+            if let Ok(mut vis) = rings.get_mut(child) {
+                *vis = if in_zone {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Visible
+                };
+            }
+        }
+    }
 }
 
 /// Drag handling via Bevy Picking pointer events.

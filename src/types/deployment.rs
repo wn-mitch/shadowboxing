@@ -30,8 +30,8 @@ impl DeploymentZone {
 
     pub fn to_player(&self) -> Player {
         match self.player {
-            ZonePlayer::Attacker => Player::Attacker,
-            ZonePlayer::Defender => Player::Defender,
+            ZonePlayer::Attacker => Player::Defender,
+            ZonePlayer::Defender => Player::Attacker,
         }
     }
 
