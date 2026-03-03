@@ -146,9 +146,11 @@ fn trigger_analysis(
             }
 
             AnalysisMode::UnitPositions => {
+                let active_player =
+                    vis_state.active_analysis_player.unwrap_or(Player::Attacker);
                 let bases: Vec<(Vec2, f32, f32, f32)> = unit_bases
                     .iter()
-                    .filter(|(_, ub)| ub.player == Player::Attacker)
+                    .filter(|(_, ub)| ub.player == active_player)
                     .map(|(t, ub)| {
                         let center = t.translation.truncate();
                         let rx = ub.base_shape.radius_x_inches();

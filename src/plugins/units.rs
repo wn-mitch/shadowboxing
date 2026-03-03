@@ -1,8 +1,9 @@
 use bevy::prelude::*;
 
-use crate::events::{ClearPlayerUnits, RemoveModelUnits, SpawnUnit};
+use crate::events::{ClearPlayerUnits, RemoveModelUnits, SpawnUnit, UnitMoved};
 use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::terrain::TerrainPiece;
+use crate::types::timeline::{AdvanceIndicator, GameTimeline, MovementRangeRing};
 use crate::types::units::{BaseShape, Player, UnitBase};
 use crate::types::visibility::{AnalysisMode, SelectedUnitForAnalysis, VisibilityState};
 use crate::los::shapes::point_in_shape;
@@ -26,6 +27,7 @@ impl Plugin for UnitsPlugin {
                     on_clear_player_units,
                     on_remove_model_units,
                     handle_unit_click_for_fade,
+                    sync_unit_tint,
                 ),
             );
     }
@@ -214,6 +216,49 @@ fn overlaps_any_terrain(pos: Vec2, base: &BaseShape, pieces: &[TerrainPiece]) ->
     false
 }
 
+fn bases_overlap(pos_a: Vec2, base_a: &BaseShape, pos_b: Vec2, base_b: &BaseShape) -> bool {
+    let ra = base_a.radius_x_inches().max(base_a.radius_y_inches());
+    let rb = base_b.radius_x_inches().max(base_b.radius_y_inches());
+    pos_a.distance(pos_b) < ra + rb
+}
+
+fn grey_tint(color: Color) -> Color {
+    let s = color.to_srgba();
+    let t = 0.5_f32;
+    Color::srgb(
+        s.red * (1.0 - t) + 0.5 * t,
+        s.green * (1.0 - t) + 0.5 * t,
+        s.blue * (1.0 - t) + 0.5 * t,
+    )
+}
+
+fn sync_unit_tint(
+    timeline: Res<GameTimeline>,
+    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    let active = timeline.active_player_in_live_view();
+
+    for (unit_base, mat_handle) in &units {
+        let target = if timeline.locked {
+            match active {
+                Some(p) if p == unit_base.player => unit_base.color,
+                _ => grey_tint(unit_base.color),
+            }
+        } else {
+            unit_base.color
+        };
+
+        // Only write when the color actually needs to change.
+        let needs_update = materials.get(mat_handle.id()).map(|m| m.color != target).unwrap_or(false);
+        if needs_update {
+            if let Some(mat) = materials.get_mut(mat_handle.id()) {
+                mat.color = target;
+            }
+        }
+    }
+}
+
 fn bounding_box(verts: &[Vec2]) -> (f32, f32, f32, f32) {
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
@@ -295,6 +340,20 @@ fn spawn_base(
                 TextColor(Color::WHITE),
                 Transform::from_xyz(0.0, 0.0, 0.2).with_scale(Vec3::splat(0.08)),
             ));
+
+            // "ADV" badge — appears when the unit has advanced.
+            // Range rings are spawned as standalone entities by TimelinePlugin on lock.
+            if movement_inches.is_some() {
+                parent.spawn((
+                    Text2d::new("ADV"),
+                    TextFont { font_size: 10.0, ..default() },
+                    TextColor(Color::srgb(1.0, 1.0, 0.0)),
+                    Transform::from_xyz(0.0, -0.35, 0.25).with_scale(Vec3::splat(0.08)),
+                    Visibility::Hidden,
+                    AdvanceIndicator,
+                    PickingBehavior::IGNORE,
+                ));
+            }
         });
 }
 
@@ -372,11 +431,32 @@ fn handle_unit_click_for_fade(
     bases: Query<Entity, With<UnitBase>>,
     vis_state: Res<VisibilityState>,
     mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+    timeline: Res<GameTimeline>,
+    mut ring_query: Query<&mut Visibility, With<MovementRangeRing>>,
 ) {
     for ev in click_events.read() {
         if bases.get(ev.target).is_err() {
             continue;
         }
+
+        // When deployment is locked, show the clicked unit's standalone range rings.
+        if timeline.locked {
+            let to_show = timeline.ring_entities.get(&ev.target).copied();
+            // Hide all rings first.
+            for mut vis in &mut ring_query {
+                *vis = Visibility::Hidden;
+            }
+            // Show the pair for the clicked unit.
+            if let Some([nr, ar]) = to_show {
+                if let Ok(mut v) = ring_query.get_mut(nr) {
+                    *v = Visibility::Visible;
+                }
+                if let Ok(mut v) = ring_query.get_mut(ar) {
+                    *v = Visibility::Visible;
+                }
+            }
+        }
+
         if vis_state.mode != AnalysisMode::UnitPositions {
             continue;
         }
@@ -390,13 +470,15 @@ fn handle_unit_click_for_fade(
 
 /// Drag handling via Bevy Picking pointer events.
 fn handle_drag(
-    mut bases: Query<(&mut Transform, &mut UnitBase)>,
+    mut bases: Query<(Entity, &mut Transform, &mut UnitBase)>,
     mut drag_events: EventReader<Pointer<Drag>>,
     mut drag_end_events: EventReader<Pointer<DragEnd>>,
     board: Res<BoardConfig>,
     layouts: Res<TerrainLayouts>,
     active_layout: Res<ActiveLayout>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
+    timeline: Res<GameTimeline>,
+    mut ev_unit_moved: EventWriter<UnitMoved>,
 ) {
     let terrain_pieces: Vec<TerrainPiece> = active_layout
         .0
@@ -405,12 +487,26 @@ fn handle_drag(
         .map(|l| l.pieces.clone())
         .unwrap_or_default();
 
+    // Snapshot all unit positions before any mutations for overlap checking on DragEnd.
+    let unit_snapshot: Vec<(Entity, Vec2, BaseShape)> = bases
+        .iter()
+        .map(|(e, t, ub)| (e, t.translation.truncate(), ub.base_shape.clone()))
+        .collect();
+
     for ev in drag_events.read() {
-        let Ok((mut transform, mut unit_base)) = bases.get_mut(ev.target) else {
+        let Ok((_, mut transform, mut unit_base)) = bases.get_mut(ev.target) else {
             continue;
         };
         if unit_base.locked {
             continue;
+        }
+        // Skip units that don't belong to the active player's turn.
+        if timeline.locked {
+            if let Some(active) = timeline.active_player_in_live_view() {
+                if unit_base.player != active {
+                    continue;
+                }
+            }
         }
 
         // Bevy Picking Drag delta is in logical pixels.
@@ -442,10 +538,28 @@ fn handle_drag(
     }
 
     for ev in drag_end_events.read() {
-        let Ok((mut transform, mut unit_base)) = bases.get_mut(ev.target) else {
+        let entity = ev.target;
+        let Ok((_, mut transform, mut unit_base)) = bases.get_mut(entity) else {
             continue;
         };
         if unit_base.locked {
+            continue;
+        }
+        // Snap back if this unit doesn't belong to the active player's turn.
+        if timeline.locked {
+            if let Some(active) = timeline.active_player_in_live_view() {
+                if unit_base.player != active {
+                    transform.translation.x = unit_base.last_valid_pos.x;
+                    transform.translation.y = unit_base.last_valid_pos.y;
+                    continue;
+                }
+            }
+        }
+
+        // In a historical view, discard the drag and snap back.
+        if timeline.locked && timeline.current_index < timeline.snapshots.len() {
+            transform.translation.x = unit_base.last_valid_pos.x;
+            transform.translation.y = unit_base.last_valid_pos.y;
             continue;
         }
 
@@ -459,15 +573,29 @@ fn handle_drag(
             pos.y.clamp(ry, board.height - ry),
         );
 
-        // Check terrain overlap.
-        if overlaps_any_terrain(clamped, &unit_base.base_shape, &terrain_pieces) {
+        // Check terrain and unit-unit overlap.
+        let blocked = overlaps_any_terrain(clamped, &unit_base.base_shape, &terrain_pieces)
+            || unit_snapshot.iter().any(|(other, other_pos, other_shape)| {
+                *other != entity && bases_overlap(clamped, &unit_base.base_shape, *other_pos, other_shape)
+            });
+        if blocked {
             // Snap back to last valid position.
             transform.translation.x = unit_base.last_valid_pos.x;
             transform.translation.y = unit_base.last_valid_pos.y;
         } else {
+            let from = timeline
+                .phase_start_positions
+                .get(&entity)
+                .copied()
+                .unwrap_or(clamped);
+
             transform.translation.x = clamped.x;
             transform.translation.y = clamped.y;
             unit_base.last_valid_pos = clamped;
+
+            if timeline.locked {
+                ev_unit_moved.send(UnitMoved { entity, from, to: clamped });
+            }
         }
     }
 }

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy::render::camera::{ScalingMode, Viewport};
 use bevy::window::PrimaryWindow;
 
-use crate::resources::{BoardConfig, PanelWidth};
+use crate::resources::{BoardConfig, PanelWidth, RightPanelWidth};
 
 pub struct BoardPlugin;
 
@@ -18,15 +18,20 @@ fn update_camera_viewport(
     mut cameras: Query<&mut Camera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     panel_width: Res<PanelWidth>,
+    right_panel_width: Res<RightPanelWidth>,
 ) {
     let Ok(window) = windows.get_single() else { return };
     let Ok(mut camera) = cameras.get_single_mut() else { return };
     let scale = window.scale_factor();
     let phys_panel_w = (panel_width.0 * scale).round() as u32;
+    let phys_right_w = (right_panel_width.0 * scale).round() as u32;
     let phys_w = window.physical_width();
     let phys_h = window.physical_height();
     let new_pos = UVec2::new(phys_panel_w, 0);
-    let new_size = UVec2::new(phys_w.saturating_sub(phys_panel_w), phys_h);
+    let new_size = UVec2::new(
+        phys_w.saturating_sub(phys_panel_w).saturating_sub(phys_right_w),
+        phys_h,
+    );
     let needs_update = camera.viewport.as_ref().map_or(true, |v| {
         v.physical_position != new_pos || v.physical_size != new_size
     });

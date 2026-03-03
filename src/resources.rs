@@ -40,6 +40,15 @@ impl Default for PanelWidth {
 }
 
 #[derive(Resource)]
+pub struct RightPanelWidth(pub f32);
+
+impl Default for RightPanelWidth {
+    fn default() -> Self {
+        Self(220.0)
+    }
+}
+
+#[derive(Resource)]
 pub struct OverlaySettings {
     pub show_source_points: bool,
     pub show_danger_region: bool,
@@ -52,11 +61,11 @@ pub struct OverlaySettings {
 impl Default for OverlaySettings {
     fn default() -> Self {
         Self {
-            show_source_points: true,
-            show_danger_region: true,
+            show_source_points: false,
+            show_danger_region: false,
             show_deployment_zones: true,
-            show_validity_rings: true,
-            show_terrain_debug: true,
+            show_validity_rings: false,
+            show_terrain_debug: false,
             show_collision_boxes: false,
         }
     }

@@ -4,10 +4,11 @@ use bevy_egui::{egui, EguiContexts};
 use crate::army_list::base_lookup::BaseDatabase;
 use crate::army_list::parse_listforge;
 use crate::events::{
-    ClearAnalysis, ClearPlayerUnits, LoadDeploymentPattern, LoadTerrainLayout, RemoveModelUnits,
-    SpawnUnit, TriggerAnalysis,
+    ClearAnalysis, ClearPlayerUnits, LockDeployment, LoadDeploymentPattern, LoadTerrainLayout,
+    RecordSnapshot, RemoveModelUnits, RewindToSnapshot, SpawnUnit, TriggerAnalysis,
 };
-use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, TerrainLayouts};
+use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, RightPanelWidth, TerrainLayouts};
+use crate::types::timeline::GameTimeline;
 use crate::types::units::{ArmyUnit, Player};
 use crate::types::visibility::{AnalysisMode, VisibilityState};
 
@@ -17,7 +18,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
             .init_resource::<PanelWidth>()
-            .add_systems(Update, draw_ui_panel);
+            .add_systems(Update, (draw_left_panel, draw_right_panel).chain());
     }
 }
 
@@ -64,7 +65,7 @@ enum UiTab {
 const ATTACKER_COLOR: Color = Color::srgb(0.85, 0.15, 0.15);
 const DEFENDER_COLOR: Color = Color::srgb(0.15, 0.35, 0.85);
 
-fn draw_ui_panel(
+fn draw_left_panel(
     mut contexts: EguiContexts,
     mut ui_state: ResMut<UiState>,
     vis_state: Res<VisibilityState>,
@@ -338,6 +339,83 @@ fn draw_army_tab(
         ev_clear_player,
         ev_remove,
     );
+}
+
+fn draw_right_panel(
+    mut contexts: EguiContexts,
+    mut timeline: ResMut<GameTimeline>,
+    mut right_panel_width: ResMut<RightPanelWidth>,
+    mut ev_lock: EventWriter<LockDeployment>,
+    mut ev_record: EventWriter<RecordSnapshot>,
+    mut ev_rewind: EventWriter<RewindToSnapshot>,
+) {
+    let ctx = contexts.ctx_mut();
+
+    let panel = egui::SidePanel::right("timeline_panel")
+        .min_width(200.0)
+        .max_width(280.0)
+        .show(ctx, |ui| {
+            ui.heading("Timeline");
+            ui.separator();
+
+            if !timeline.locked {
+                // ── Pre-lock ─────────────────────────────────────
+                ui.label("First player:");
+                ui.radio_value(
+                    &mut timeline.first_player,
+                    crate::types::timeline::FirstPlayer::Attacker,
+                    "Attacker",
+                );
+                ui.radio_value(
+                    &mut timeline.first_player,
+                    crate::types::timeline::FirstPlayer::Defender,
+                    "Defender",
+                );
+                ui.add_space(8.0);
+                if ui.button("Lock In Deployment").clicked() {
+                    ev_lock.send(LockDeployment);
+                }
+            } else {
+                // ── Post-lock ─────────────────────────────────────
+                ui.label("History:");
+                let snap_count = timeline.snapshots.len();
+                let current = timeline.current_index;
+
+                egui::ScrollArea::vertical()
+                    .id_salt("timeline_scroll")
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (idx, snapshot) in timeline.snapshots.iter().enumerate() {
+                            let selected = current == idx;
+                            if ui.selectable_label(selected, &snapshot.label).clicked() {
+                                ev_rewind.send(RewindToSnapshot(idx));
+                            }
+                        }
+                        let live_selected = current >= snap_count;
+                        if ui.selectable_label(live_selected, "▶ Live").clicked() {
+                            ev_rewind.send(RewindToSnapshot(snap_count));
+                        }
+                    });
+
+                ui.add_space(8.0);
+                let phase_count = timeline.snapshots.len().saturating_sub(1);
+                let turn_num = phase_count / 2 + 1;
+                let player_str = match timeline.active_player_in_live_view() {
+                    Some(Player::Attacker) => "Attacker",
+                    Some(Player::Defender) => "Defender",
+                    None => "?",
+                };
+                let record_label =
+                    format!("Record Turn {} — {} Move", turn_num, player_str);
+                let snapshot_label =
+                    format!("Turn {} — {} Move", turn_num, player_str);
+                if ui.button(record_label).clicked() {
+                    ev_record.send(RecordSnapshot { label: snapshot_label });
+                }
+            }
+        });
+
+    right_panel_width.0 = panel.response.rect.width();
 }
 
 fn draw_analysis_tab(

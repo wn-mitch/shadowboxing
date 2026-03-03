@@ -59,3 +59,27 @@ pub struct RemoveModelUnits {
 /// Import an army list.
 #[derive(Event, Debug, Clone)]
 pub struct TriggerArmyListImport(pub String);
+
+/// Lock deployment and begin the game timeline.
+#[derive(Event, Debug, Clone)]
+pub struct LockDeployment;
+
+/// Append a snapshot of current unit positions to the timeline.
+#[derive(Event, Debug, Clone)]
+pub struct RecordSnapshot {
+    pub label: String,
+}
+
+/// Restore all units to a historical snapshot by index.
+/// An index equal to `snapshots.len()` means "live view".
+#[derive(Event, Debug, Clone)]
+pub struct RewindToSnapshot(pub usize);
+
+/// Fired by `handle_drag` when a unit's committed position changes while the
+/// timeline is locked and in live view.
+#[derive(Event, Debug, Clone)]
+pub struct UnitMoved {
+    pub entity: Entity,
+    pub from: Vec2,
+    pub to: Vec2,
+}

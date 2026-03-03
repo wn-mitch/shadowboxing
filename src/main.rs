@@ -16,11 +16,12 @@ use plugins::{
     board::BoardPlugin,
     deployment::DeploymentPlugin,
     terrain::TerrainPlugin,
+    timeline::TimelinePlugin,
     ui::UiPlugin,
     units::UnitsPlugin,
     visibility::VisibilityPlugin,
 };
-use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
+use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, RightPanelWidth, TerrainLayouts};
 use types::{
     deployment::DeploymentPatternList,
     terrain::TerrainLayout,
@@ -44,6 +45,7 @@ fn main() {
         .init_resource::<ActivePattern>()
         .init_resource::<VisibilityState>()
         .init_resource::<OverlaySettings>()
+        .init_resource::<RightPanelWidth>()
         // Events.
         .add_event::<LoadTerrainLayout>()
         .add_event::<LoadDeploymentPattern>()
@@ -59,6 +61,7 @@ fn main() {
             DeploymentPlugin,
             UnitsPlugin,
             VisibilityPlugin,
+            TimelinePlugin,
             UiPlugin,
             bevy::picking::mesh_picking::MeshPickingPlugin,
         ))

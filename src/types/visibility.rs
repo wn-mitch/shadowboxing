@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use geo::MultiPolygon;
 
 use crate::los::CandidateInfo;
+use crate::types::units::Player;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnalysisMode {
@@ -22,6 +23,8 @@ pub struct VisibilityState {
     pub mode: AnalysisMode,
     /// Area of danger region in square inches.
     pub danger_area_sq_in: f64,
+    /// Which player's units to analyse (synced from timeline each frame).
+    pub active_analysis_player: Option<Player>,
 }
 
 /// ECS marker for the mesh entity that renders the danger region.
