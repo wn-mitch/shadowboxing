@@ -7,8 +7,8 @@ use crate::los::{extract_footprint_edges, extract_solid_edges, run_analysis, sam
 use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::units::{Player, UnitBase};
 use crate::types::visibility::{
-    AnalysisMode, DangerRegionMesh, SelectedSourceEntity, SourceIndex, SourcePointMarker,
-    SourceRayVerts, VisibilityState,
+    AnalysisMode, DangerRegionMesh, SelectedSourceEntity, SelectedUnitForAnalysis, SourceIndex,
+    SourcePointMarker, SourceRayVerts, VisibilityState,
 };
 
 pub struct VisibilityPlugin;
@@ -16,6 +16,7 @@ pub struct VisibilityPlugin;
 impl Plugin for VisibilityPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedSourceEntity>()
+            .init_resource::<SelectedUnitForAnalysis>()
             .add_event::<ClearAnalysis>()
             .add_systems(
                 Update,
@@ -27,6 +28,7 @@ impl Plugin for VisibilityPlugin {
                     draw_selected_source_rays,
                     sync_source_point_visibility,
                     sync_danger_region_visibility,
+                    apply_unit_fade,
                     draw_collision_boxes,
                 ),
             );
@@ -42,6 +44,7 @@ fn trigger_analysis(
     mut events: EventReader<TriggerAnalysis>,
     mut vis_state: ResMut<VisibilityState>,
     mut selected: ResMut<SelectedSourceEntity>,
+    mut selected_unit: ResMut<SelectedUnitForAnalysis>,
     layouts: Res<TerrainLayouts>,
     active_layout: Res<ActiveLayout>,
     patterns: Res<DeploymentPatterns>,
@@ -59,6 +62,7 @@ fn trigger_analysis(
         vis_state.analyzing = true;
         vis_state.mode = ev.0;
         selected.0 = None;
+        selected_unit.0 = None;
 
         let pieces = active_layout
             .0
@@ -207,6 +211,7 @@ fn clear_analysis(
     mut commands: Commands,
     mut vis_state: ResMut<VisibilityState>,
     mut selected: ResMut<SelectedSourceEntity>,
+    mut selected_unit: ResMut<SelectedUnitForAnalysis>,
     danger_meshes: Query<Entity, With<DangerRegionMesh>>,
     source_dots: Query<Entity, With<SourcePointMarker>>,
 ) {
@@ -220,6 +225,7 @@ fn clear_analysis(
         vis_state.danger_region = None;
         vis_state.danger_area_sq_in = 0.0;
         selected.0 = None;
+        selected_unit.0 = None;
     }
 }
 
@@ -281,6 +287,57 @@ fn draw_collision_boxes(
     }
     for ([a, b], _) in one_way {
         gizmos.line_2d(a, b, Color::srgba(1.0, 0.6, 0.0, 0.7));
+    }
+}
+
+fn apply_unit_fade(
+    selected: Res<SelectedUnitForAnalysis>,
+    unit_q: Query<(&Transform, &UnitBase)>,
+    danger_q: Query<&MeshMaterial2d<ColorMaterial>, With<DangerRegionMesh>>,
+    mut source_q: Query<(&mut Visibility, Option<&SourceRayVerts>), With<SourcePointMarker>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    overlay: Res<OverlaySettings>,
+) {
+    if !selected.is_changed() {
+        return;
+    }
+
+    match selected.0 {
+        None => {
+            let v = vis(overlay.show_source_points);
+            for (mut vis, _) in &mut source_q {
+                *vis = v;
+            }
+            for handle in &danger_q {
+                if let Some(mat) = materials.get_mut(handle.id()) {
+                    mat.color = mat.color.with_alpha(0.4);
+                }
+            }
+        }
+        Some(unit_entity) => {
+            let Ok((transform, unit_base)) = unit_q.get(unit_entity) else {
+                return;
+            };
+            let unit_pos = transform.translation.truncate();
+            let threshold = unit_base.movement_inches.unwrap_or(0.0)
+                + unit_base
+                    .base_shape
+                    .radius_x_inches()
+                    .max(unit_base.base_shape.radius_y_inches())
+                + 0.5;
+
+            for (mut vis, ray_verts) in &mut source_q {
+                let matches = ray_verts
+                    .map(|rv| rv.source.distance(unit_pos) <= threshold)
+                    .unwrap_or(false);
+                *vis = if matches { Visibility::Visible } else { Visibility::Hidden };
+            }
+            for handle in &danger_q {
+                if let Some(mat) = materials.get_mut(handle.id()) {
+                    mat.color = mat.color.with_alpha(0.08);
+                }
+            }
+        }
     }
 }
 

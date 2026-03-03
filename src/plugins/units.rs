@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 
-use crate::events::{ClearPlayerUnits, SpawnUnit};
+use crate::events::{ClearPlayerUnits, RemoveModelUnits, SpawnUnit};
 use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::terrain::TerrainPiece;
 use crate::types::units::{BaseShape, Player, UnitBase};
+use crate::types::visibility::{AnalysisMode, SelectedUnitForAnalysis, VisibilityState};
 use crate::los::shapes::point_in_shape;
 
 #[derive(Component)]
@@ -13,10 +14,20 @@ pub struct UnitsPlugin;
 
 impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<ClearPlayerUnits>().add_systems(
-            Update,
-            (on_spawn_unit, handle_drag, update_validity_indicators, sync_validity_rings, on_clear_player_units),
-        );
+        app.add_event::<ClearPlayerUnits>()
+            .add_event::<RemoveModelUnits>()
+            .add_systems(
+                Update,
+                (
+                    on_spawn_unit,
+                    handle_drag,
+                    update_validity_indicators,
+                    sync_validity_rings,
+                    on_clear_player_units,
+                    on_remove_model_units,
+                    handle_unit_click_for_fade,
+                ),
+            );
     }
 }
 
@@ -259,7 +270,14 @@ fn spawn_base(
             PickingBehavior::default(),
         ))
         .with_children(|parent| {
-            // Zone violation ring (hidden by default).
+            // White outline ring — always visible just outside the model edge.
+            parent.spawn((
+                Mesh2d(meshes.add(Annulus::new(ring_inner, ring_inner + 0.12))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
+                Transform::from_xyz(0.0, 0.0, 0.05),
+            ));
+
+            // Zone violation ring (hidden by default; z=0.15 covers the white ring when shown).
             parent.spawn((
                 Mesh2d(meshes.add(ring)),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(
@@ -329,6 +347,44 @@ fn on_clear_player_units(
                 commands.entity(entity).despawn_recursive();
             }
         }
+    }
+}
+
+fn on_remove_model_units(
+    mut commands: Commands,
+    mut ev: EventReader<RemoveModelUnits>,
+    units: Query<(Entity, &UnitBase)>,
+) {
+    for ev in ev.read() {
+        for (entity, base) in &units {
+            if base.player == ev.player
+                && base.unit_name == ev.unit_name
+                && base.model_name == ev.model_name
+            {
+                commands.entity(entity).despawn_recursive();
+            }
+        }
+    }
+}
+
+fn handle_unit_click_for_fade(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<Entity, With<UnitBase>>,
+    vis_state: Res<VisibilityState>,
+    mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+) {
+    for ev in click_events.read() {
+        if bases.get(ev.target).is_err() {
+            continue;
+        }
+        if vis_state.mode != AnalysisMode::UnitPositions {
+            continue;
+        }
+        // Toggle: clicking the same unit again deselects it.
+        selected_unit.0 = match selected_unit.0 {
+            Some(e) if e == ev.target => None,
+            _ => Some(ev.target),
+        };
     }
 }
 

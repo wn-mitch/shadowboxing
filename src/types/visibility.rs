@@ -45,3 +45,7 @@ pub struct SourceRayVerts {
 /// Which source dot (if any) is selected for ray display.
 #[derive(Resource, Default)]
 pub struct SelectedSourceEntity(pub Option<Entity>);
+
+/// Which unit (if any) is selected for per-unit analysis fade.
+#[derive(Resource, Default)]
+pub struct SelectedUnitForAnalysis(pub Option<Entity>);

@@ -4,8 +4,8 @@ use bevy_egui::{egui, EguiContexts};
 use crate::army_list::base_lookup::BaseDatabase;
 use crate::army_list::parse_listforge;
 use crate::events::{
-    ClearAnalysis, ClearPlayerUnits, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
-    TriggerAnalysis,
+    ClearAnalysis, ClearPlayerUnits, LoadDeploymentPattern, LoadTerrainLayout, RemoveModelUnits,
+    SpawnUnit, TriggerAnalysis,
 };
 use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, TerrainLayouts};
 use crate::types::units::{ArmyUnit, Player};
@@ -78,6 +78,7 @@ fn draw_ui_panel(
     mut ev_clear: EventWriter<ClearAnalysis>,
     mut ev_spawn: EventWriter<SpawnUnit>,
     mut ev_clear_player: EventWriter<ClearPlayerUnits>,
+    mut ev_remove: EventWriter<RemoveModelUnits>,
     mut panel_width: ResMut<PanelWidth>,
     mut overlay_settings: ResMut<OverlaySettings>,
 ) {
@@ -110,7 +111,7 @@ fn draw_ui_panel(
                     &mut ev_load_pattern,
                     &mut overlay_settings,
                 ),
-                UiTab::Army => draw_army_tab(ui, &mut ui_state, &mut ev_spawn, &mut ev_clear_player),
+                UiTab::Army => draw_army_tab(ui, &mut ui_state, &mut ev_spawn, &mut ev_clear_player, &mut ev_remove),
                 UiTab::Analysis => draw_analysis_tab(
                     ui,
                     &mut ui_state,
@@ -203,6 +204,7 @@ fn import_list(text: &str, player: Player) -> Vec<ArmyUnit> {
                 unit_name: unit.name.clone(),
                 model_name: model_name.clone(),
                 count: *count,
+                placed: 0,
                 base_shape,
                 movement_inches: movement,
                 color,
@@ -223,6 +225,7 @@ fn draw_player_section(
     player: Player,
     ev_spawn: &mut EventWriter<SpawnUnit>,
     ev_clear_player: &mut EventWriter<ClearPlayerUnits>,
+    ev_remove: &mut EventWriter<RemoveModelUnits>,
 ) {
     ui.colored_label(label_color, label);
     if !*submitted {
@@ -239,34 +242,56 @@ fn draw_player_section(
         egui::ScrollArea::vertical()
             .id_salt(format!("{}_scroll", label))
             .show(ui, |ui| {
-                let snapshot = units.clone();
-                for unit in &snapshot {
+                let units_len = units.len();
+                for i in 0..units_len {
+                    // Extract display data without holding a borrow across the button checks.
+                    let (unit_name, model_name, base_shape, base_shape_label, placed, count, color, movement_inches) = {
+                        let u = &units[i];
+                        (
+                            u.unit_name.clone(),
+                            u.model_name.clone(),
+                            u.base_shape.clone(),
+                            u.base_shape.label(),
+                            u.placed,
+                            u.count,
+                            u.color,
+                            u.movement_inches,
+                        )
+                    };
+
                     ui.horizontal(|ui| {
-                        let [r, g, b, _] = unit.color.to_srgba().to_f32_array();
+                        let [r, g, b, _] = color.to_srgba().to_f32_array();
                         let egui_color = egui::Color32::from_rgb(
                             (r * 255.0) as u8,
                             (g * 255.0) as u8,
                             (b * 255.0) as u8,
                         );
                         ui.colored_label(egui_color, "■");
-                        ui.label(format!(
-                            "{}x {} — {}",
-                            unit.count,
-                            unit.model_name,
-                            unit.base_shape.label()
-                        ));
+                        ui.label(format!("{}/{} {} — {}", placed, count, model_name, base_shape_label));
                     });
-                    if ui.button(format!("Add {} to Board", unit.model_name)).clicked() {
-                        ev_spawn.send(SpawnUnit {
-                            unit_name: unit.unit_name.clone(),
-                            model_name: unit.model_name.clone(),
-                            base_shape: unit.base_shape.clone(),
-                            count: unit.count,
-                            color: unit.color,
-                            movement_inches: unit.movement_inches,
-                            player: unit.player,
+
+                    if placed < count {
+                        if ui.button(format!("Add {} to Board", model_name)).clicked() {
+                            ev_spawn.send(SpawnUnit {
+                                unit_name: unit_name.clone(),
+                                model_name: model_name.clone(),
+                                base_shape,
+                                count: count - placed,
+                                color,
+                                movement_inches,
+                                player,
+                            });
+                            units[i].placed = count;
+                        }
+                    } else if ui.button(format!("Remove {} from Board", model_name)).clicked() {
+                        ev_remove.send(RemoveModelUnits {
+                            unit_name: unit_name.clone(),
+                            model_name: model_name.clone(),
+                            player,
                         });
+                        units[i].placed = 0;
                     }
+
                     ui.separator();
                 }
             });
@@ -284,6 +309,7 @@ fn draw_army_tab(
     ui_state: &mut UiState,
     ev_spawn: &mut EventWriter<SpawnUnit>,
     ev_clear_player: &mut EventWriter<ClearPlayerUnits>,
+    ev_remove: &mut EventWriter<RemoveModelUnits>,
 ) {
     draw_player_section(
         ui,
@@ -295,6 +321,7 @@ fn draw_army_tab(
         Player::Attacker,
         ev_spawn,
         ev_clear_player,
+        ev_remove,
     );
 
     ui.separator();
@@ -309,6 +336,7 @@ fn draw_army_tab(
         Player::Defender,
         ev_spawn,
         ev_clear_player,
+        ev_remove,
     );
 }
 

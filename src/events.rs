@@ -48,6 +48,14 @@ pub struct ClearPlayerUnits {
     pub player: Player,
 }
 
+/// Despawn all board bases matching this unit/model/player combination.
+#[derive(Event, Debug, Clone)]
+pub struct RemoveModelUnits {
+    pub unit_name: String,
+    pub model_name: String,
+    pub player: Player,
+}
+
 /// Import an army list.
 #[derive(Event, Debug, Clone)]
 pub struct TriggerArmyListImport(pub String);

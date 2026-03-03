@@ -104,6 +104,8 @@ pub struct ArmyUnit {
     pub unit_name: String,
     pub model_name: String,
     pub count: u32,
+    /// How many of this model are currently on the board (0 = none placed).
+    pub placed: u32,
     pub base_shape: BaseShape,
     pub movement_inches: Option<f32>,
     pub color: Color,
