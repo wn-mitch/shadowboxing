@@ -42,6 +42,12 @@ pub struct SpawnUnit {
 #[derive(Event, Debug, Clone)]
 pub struct DeleteUnit(pub Entity);
 
+/// Remove all board units belonging to a player and reset their army list.
+#[derive(Event, Debug, Clone)]
+pub struct ClearPlayerUnits {
+    pub player: Player,
+}
+
 /// Import an army list.
 #[derive(Event, Debug, Clone)]
 pub struct TriggerArmyListImport(pub String);

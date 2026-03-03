@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::events::SpawnUnit;
+use crate::events::{ClearPlayerUnits, SpawnUnit};
 use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::terrain::TerrainPiece;
 use crate::types::units::{BaseShape, Player, UnitBase};
@@ -13,9 +13,9 @@ pub struct UnitsPlugin;
 
 impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_event::<ClearPlayerUnits>().add_systems(
             Update,
-            (on_spawn_unit, handle_drag, update_validity_indicators, sync_validity_rings),
+            (on_spawn_unit, handle_drag, update_validity_indicators, sync_validity_rings, on_clear_player_units),
         );
     }
 }
@@ -270,13 +270,6 @@ fn spawn_base(
                 ZoneRingMarker,
             ));
 
-            // Center dot.
-            parent.spawn((
-                Mesh2d(meshes.add(Circle::new(0.1))),
-                MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
-                Transform::from_xyz(0.0, 0.0, 0.1),
-            ));
-
             // Name label.
             parent.spawn((
                 Text2d::new(model_name.to_string()),
@@ -320,6 +313,20 @@ fn update_validity_indicators(
                 } else {
                     Visibility::Visible
                 };
+            }
+        }
+    }
+}
+
+fn on_clear_player_units(
+    mut commands: Commands,
+    mut ev_clear: EventReader<ClearPlayerUnits>,
+    units: Query<(Entity, &UnitBase)>,
+) {
+    for ev in ev_clear.read() {
+        for (entity, base) in &units {
+            if base.player == ev.player {
+                commands.entity(entity).despawn_recursive();
             }
         }
     }

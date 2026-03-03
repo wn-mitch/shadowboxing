@@ -4,7 +4,7 @@ use bevy_egui::{egui, EguiContexts};
 use crate::army_list::base_lookup::BaseDatabase;
 use crate::army_list::parse_listforge;
 use crate::events::{
-    ClearAnalysis, DeleteUnit, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
+    ClearAnalysis, ClearPlayerUnits, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
     TriggerAnalysis,
 };
 use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, TerrainLayouts};
@@ -24,12 +24,16 @@ impl Plugin for UiPlugin {
 #[derive(Resource)]
 struct UiState {
     active_tab: UiTab,
-    /// Raw text from the army list paste box.
-    army_list_text: String,
-    /// Parsed units ready to display.
-    army_units: Vec<ArmyUnit>,
+    // Attacker
+    attacker_list_text: String,
+    attacker_units: Vec<ArmyUnit>,
+    attacker_submitted: bool,
+    // Defender
+    defender_list_text: String,
+    defender_units: Vec<ArmyUnit>,
+    defender_submitted: bool,
+    // shared
     movement_override: f32,
-    selected_player: SelectedPlayer,
     selected_analysis_mode: AnalysisMode,
 }
 
@@ -37,10 +41,13 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             active_tab: UiTab::default(),
-            army_list_text: String::new(),
-            army_units: Vec::new(),
+            attacker_list_text: String::new(),
+            attacker_units: Vec::new(),
+            attacker_submitted: false,
+            defender_list_text: String::new(),
+            defender_units: Vec::new(),
+            defender_submitted: false,
             movement_override: 0.0,
-            selected_player: SelectedPlayer::Defender,
             selected_analysis_mode: AnalysisMode::ZoneCoverage,
         }
     }
@@ -52,22 +59,6 @@ enum UiTab {
     Setup,
     Army,
     Analysis,
-}
-
-#[derive(Default, PartialEq, Eq, Clone, Copy)]
-enum SelectedPlayer {
-    #[default]
-    Attacker,
-    Defender,
-}
-
-impl SelectedPlayer {
-    fn to_player(&self) -> Player {
-        match self {
-            SelectedPlayer::Attacker => Player::Attacker,
-            SelectedPlayer::Defender => Player::Defender,
-        }
-    }
 }
 
 const ATTACKER_COLOR: Color = Color::srgb(0.85, 0.15, 0.15);
@@ -86,7 +77,7 @@ fn draw_ui_panel(
     mut ev_trigger: EventWriter<TriggerAnalysis>,
     mut ev_clear: EventWriter<ClearAnalysis>,
     mut ev_spawn: EventWriter<SpawnUnit>,
-    mut ev_delete: EventWriter<DeleteUnit>,
+    mut ev_clear_player: EventWriter<ClearPlayerUnits>,
     mut panel_width: ResMut<PanelWidth>,
     mut overlay_settings: ResMut<OverlaySettings>,
 ) {
@@ -119,7 +110,7 @@ fn draw_ui_panel(
                     &mut ev_load_pattern,
                     &mut overlay_settings,
                 ),
-                UiTab::Army => draw_army_tab(ui, &mut ui_state, &mut ev_spawn),
+                UiTab::Army => draw_army_tab(ui, &mut ui_state, &mut ev_spawn, &mut ev_clear_player),
                 UiTab::Analysis => draw_analysis_tab(
                     ui,
                     &mut ui_state,
@@ -183,110 +174,142 @@ fn draw_setup_tab(
     });
 }
 
+fn import_list(text: &str, player: Player) -> Vec<ArmyUnit> {
+    let parsed = parse_listforge(text);
+    let base_db = BaseDatabase::load(
+        include_str!("../../assets/Datasheets.json"),
+        include_str!("../../assets/Datasheets_models.json"),
+    );
+    let color = match player {
+        Player::Attacker => ATTACKER_COLOR,
+        Player::Defender => DEFENDER_COLOR,
+    };
+    let mut army_units = Vec::new();
+    for unit in parsed {
+        let valid_models: Vec<(String, u32)> = unit
+            .model_counts
+            .iter()
+            .filter(|(model_name, _)| base_db.has_model(&unit.name, model_name))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let models_to_spawn: Vec<(String, u32)> = if valid_models.is_empty() {
+            vec![(unit.name.clone(), 1)]
+        } else {
+            valid_models
+        };
+        for (model_name, count) in &models_to_spawn {
+            let (base_shape, movement) = base_db.lookup(&unit.name, model_name);
+            army_units.push(ArmyUnit {
+                unit_name: unit.name.clone(),
+                model_name: model_name.clone(),
+                count: *count,
+                base_shape,
+                movement_inches: movement,
+                color,
+                player,
+            });
+        }
+    }
+    army_units
+}
+
+fn draw_player_section(
+    ui: &mut egui::Ui,
+    label: &str,
+    label_color: egui::Color32,
+    list_text: &mut String,
+    units: &mut Vec<ArmyUnit>,
+    submitted: &mut bool,
+    player: Player,
+    ev_spawn: &mut EventWriter<SpawnUnit>,
+    ev_clear_player: &mut EventWriter<ClearPlayerUnits>,
+) {
+    ui.colored_label(label_color, label);
+    if !*submitted {
+        ui.add(
+            egui::TextEdit::multiline(list_text)
+                .desired_rows(6)
+                .desired_width(f32::INFINITY),
+        );
+        if ui.button("Import List").clicked() {
+            *units = import_list(list_text, player);
+            *submitted = true;
+        }
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt(format!("{}_scroll", label))
+            .show(ui, |ui| {
+                let snapshot = units.clone();
+                for unit in &snapshot {
+                    ui.horizontal(|ui| {
+                        let [r, g, b, _] = unit.color.to_srgba().to_f32_array();
+                        let egui_color = egui::Color32::from_rgb(
+                            (r * 255.0) as u8,
+                            (g * 255.0) as u8,
+                            (b * 255.0) as u8,
+                        );
+                        ui.colored_label(egui_color, "■");
+                        ui.label(format!(
+                            "{}x {} — {}",
+                            unit.count,
+                            unit.model_name,
+                            unit.base_shape.label()
+                        ));
+                    });
+                    if ui.button(format!("Add {} to Board", unit.model_name)).clicked() {
+                        ev_spawn.send(SpawnUnit {
+                            unit_name: unit.unit_name.clone(),
+                            model_name: unit.model_name.clone(),
+                            base_shape: unit.base_shape.clone(),
+                            count: unit.count,
+                            color: unit.color,
+                            movement_inches: unit.movement_inches,
+                            player: unit.player,
+                        });
+                    }
+                    ui.separator();
+                }
+            });
+        if ui.button("Clear List").clicked() {
+            ev_clear_player.send(ClearPlayerUnits { player });
+            units.clear();
+            list_text.clear();
+            *submitted = false;
+        }
+    }
+}
+
 fn draw_army_tab(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
     ev_spawn: &mut EventWriter<SpawnUnit>,
+    ev_clear_player: &mut EventWriter<ClearPlayerUnits>,
 ) {
-    ui.label("Player side:");
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut ui_state.selected_player, SelectedPlayer::Attacker, "Attacker");
-        ui.selectable_value(&mut ui_state.selected_player, SelectedPlayer::Defender, "Defender");
-    });
-
-    ui.add_space(4.0);
-    ui.label("Paste Listforge list:");
-    ui.add(
-        egui::TextEdit::multiline(&mut ui_state.army_list_text)
-            .desired_rows(8)
-            .desired_width(f32::INFINITY),
+    draw_player_section(
+        ui,
+        "ATTACKER",
+        egui::Color32::from_rgb(217, 38, 38),
+        &mut ui_state.attacker_list_text,
+        &mut ui_state.attacker_units,
+        &mut ui_state.attacker_submitted,
+        Player::Attacker,
+        ev_spawn,
+        ev_clear_player,
     );
-
-    if ui.button("Import List").clicked() {
-        let parsed = parse_listforge(&ui_state.army_list_text);
-        let base_db = BaseDatabase::load(
-            include_str!("../../assets/Datasheets.json"),
-            include_str!("../../assets/Datasheets_models.json"),
-        );
-
-        let player = ui_state.selected_player.to_player();
-        let color = match player {
-            Player::Attacker => ATTACKER_COLOR,
-            Player::Defender => DEFENDER_COLOR,
-        };
-        let mut army_units = Vec::new();
-
-        for unit in parsed {
-            let valid_models: Vec<(String, u32)> = unit
-                .model_counts
-                .iter()
-                .filter(|(model_name, _)| base_db.has_model(&unit.name, model_name))
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
-
-            // If no bullet lines matched real model variants, treat the unit as a single model.
-            let models_to_spawn: Vec<(String, u32)> = if valid_models.is_empty() {
-                vec![(unit.name.clone(), 1)]
-            } else {
-                valid_models
-            };
-
-            for (model_name, count) in &models_to_spawn {
-                let (base_shape, movement) = base_db.lookup(&unit.name, model_name);
-                army_units.push(ArmyUnit {
-                    unit_name: unit.name.clone(),
-                    model_name: model_name.clone(),
-                    count: *count,
-                    base_shape,
-                    movement_inches: movement,
-                    color,
-                    player,
-                });
-            }
-        }
-        ui_state.army_units = army_units;
-    }
 
     ui.separator();
 
-    // Unit roster.
-    if ui_state.army_units.is_empty() {
-        ui.label("No units imported.");
-        return;
-    }
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let units = ui_state.army_units.clone();
-        for unit in &units {
-            ui.horizontal(|ui| {
-                let [r, g, b, _] = unit.color.to_srgba().to_f32_array();
-                let egui_color = egui::Color32::from_rgb(
-                    (r * 255.0) as u8,
-                    (g * 255.0) as u8,
-                    (b * 255.0) as u8,
-                );
-                ui.colored_label(egui_color, "■");
-                ui.label(format!(
-                    "{}x {} — {}",
-                    unit.count,
-                    unit.model_name,
-                    unit.base_shape.label()
-                ));
-            });
-            if ui.button(format!("Add {} to Board", unit.model_name)).clicked() {
-                ev_spawn.send(SpawnUnit {
-                    unit_name: unit.unit_name.clone(),
-                    model_name: unit.model_name.clone(),
-                    base_shape: unit.base_shape.clone(),
-                    count: unit.count,
-                    color: unit.color,
-                    movement_inches: unit.movement_inches,
-                    player: unit.player,
-                });
-            }
-            ui.separator();
-        }
-    });
+    draw_player_section(
+        ui,
+        "DEFENDER",
+        egui::Color32::from_rgb(38, 89, 217),
+        &mut ui_state.defender_list_text,
+        &mut ui_state.defender_units,
+        &mut ui_state.defender_submitted,
+        Player::Defender,
+        ev_spawn,
+        ev_clear_player,
+    );
 }
 
 fn draw_analysis_tab(
