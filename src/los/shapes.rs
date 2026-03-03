@@ -144,11 +144,11 @@ pub fn extract_footprint_edges(
             continue;
         }
 
-        let center = piece.world_position();
         let local_verts = shape_local_vertices(shape);
         let world_verts: Vec<Vec2> =
             local_verts.iter().map(|&lv| local_to_world(lv, piece)).collect();
         let n = world_verts.len();
+        let center = world_verts.iter().fold(Vec2::ZERO, |acc, &v| acc + v) / n as f32;
         for i in 0..n {
             let a = world_verts[i];
             let b = world_verts[(i + 1) % n];
@@ -203,6 +203,125 @@ fn shape_local_vertices(shape: &TerrainShape) -> Vec<Vec2> {
             vec![s + perp, e + perp, e - perp, s - perp]
         }
     }
+}
+
+/// Returns the boundary edges of a shape in local piece space (y-flipped for Bevy).
+/// Circle returns empty — point sampling is sufficient for circular shapes.
+fn shape_edges_local(shape: &TerrainShape) -> Vec<[Vec2; 2]> {
+    match shape {
+        TerrainShape::Line { start, end, thickness } => {
+            let s = Vec2::new(start.x, -start.y);
+            let e = Vec2::new(end.x, -end.y);
+            let dir = (e - s).normalize_or_zero();
+            let perp = Vec2::new(-dir.y, dir.x) * (thickness / 2.0);
+            let v = [s + perp, e + perp, e - perp, s - perp];
+            vec![[v[0], v[1]], [v[1], v[2]], [v[2], v[3]], [v[3], v[0]]]
+        }
+        TerrainShape::Rectangle { width, height, x, y } => {
+            let c = [
+                Vec2::new(*x, -*y),
+                Vec2::new(x + width, -*y),
+                Vec2::new(x + width, -(y + height)),
+                Vec2::new(*x, -(y + height)),
+            ];
+            vec![[c[0], c[1]], [c[1], c[2]], [c[2], c[3]], [c[3], c[0]]]
+        }
+        TerrainShape::Polygon { points } => {
+            let v: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, -p.y)).collect();
+            let n = v.len();
+            (0..n).map(|i| [v[i], v[(i + 1) % n]]).collect()
+        }
+        TerrainShape::Circle { .. } => vec![],
+    }
+}
+
+/// Returns true if the segment p0→p1 has any point inside or on the unit ellipse
+/// centered at `center` with semi-axes (rx, ry). Maps to unit-circle space and
+/// finds the closest point on the segment to the origin.
+fn segment_intersects_ellipse(p0: Vec2, p1: Vec2, center: Vec2, rx: f32, ry: f32) -> bool {
+    let scale = Vec2::new(rx, ry);
+    let a = (p0 - center) / scale;
+    let b = (p1 - center) / scale;
+    let ab = b - a;
+    let len_sq = ab.length_squared();
+    if len_sq < 1e-10 {
+        return a.length_squared() <= 1.0;
+    }
+    let t = (-a.dot(ab) / len_sq).clamp(0.0, 1.0);
+    (a + ab * t).length_squared() <= 1.0
+}
+
+/// Check whether a model with elliptical base (rx, ry) can be placed at `candidate`.
+/// Returns false if the model would be out-of-bounds or overlap a solid blocking shape.
+/// Solid shapes: walls (shape_idx > 0 on blocking pieces) and Circle footprints (shape_idx == 0,
+/// not Rectangle/Polygon) — mirrors the `extract_solid_edges` classification.
+pub fn is_valid_model_placement(
+    candidate: Vec2,
+    rx: f32,
+    ry: f32,
+    pieces: &[TerrainPiece],
+) -> bool {
+    // Board bounds: model base must fit entirely within the 60×44 board.
+    if candidate.x < rx
+        || candidate.x > 60.0 - rx
+        || candidate.y < ry
+        || candidate.y > 44.0 - ry
+    {
+        return false;
+    }
+
+    // Sample center + 8 equally-spaced base perimeter points.
+    let mut test_points = [Vec2::ZERO; 9];
+    test_points[0] = candidate;
+    for i in 0..8usize {
+        let angle = i as f32 * std::f32::consts::TAU / 8.0;
+        test_points[i + 1] = candidate + Vec2::new(angle.cos() * rx, angle.sin() * ry);
+    }
+
+    for &pt in &test_points {
+        for piece in pieces {
+            if !piece.blocking {
+                continue;
+            }
+            for (shape_idx, shape) in piece.shapes.iter().enumerate() {
+                let is_solid = if shape_idx == 0 {
+                    !matches!(shape, TerrainShape::Rectangle { .. } | TerrainShape::Polygon { .. })
+                } else {
+                    true
+                };
+                if is_solid && point_in_shape(pt, shape, piece) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Edge-intersection pass: catches wall edges that cross the base ellipse boundary
+    // without any sample point landing inside the wall polygon.
+    for piece in pieces {
+        if !piece.blocking {
+            continue;
+        }
+        for (shape_idx, shape) in piece.shapes.iter().enumerate() {
+            let is_solid = if shape_idx == 0 {
+                !matches!(shape, TerrainShape::Rectangle { .. } | TerrainShape::Polygon { .. })
+            } else {
+                true
+            };
+            if !is_solid {
+                continue;
+            }
+            for edge in shape_edges_local(shape) {
+                let p0 = local_to_world(edge[0], piece);
+                let p1 = local_to_world(edge[1], piece);
+                if segment_intersects_ellipse(p0, p1, candidate, rx, ry) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// World-space obstacle vertices (used by vis_poly for angle events).
@@ -280,6 +399,27 @@ mod tests {
         // world_to_local: rotate(+90°) maps world (0, 3) → local (-3, 0)
         assert!((local.x - (-3.0)).abs() < 1e-4, "local.x={}", local.x);
         assert!(local.y.abs() < 1e-4, "local.y={}", local.y);
+    }
+
+    #[test]
+    fn footprint_edge_normals_anchor_corner_rect() {
+        // Rectangle starting at piece origin — the classic case that previously had
+        // two inverted normals (top and left edges).
+        let piece = make_piece(0.0, Mirror::None, Vec2::new(10.0, 20.0));
+        let empty = std::collections::HashSet::new();
+        let edges = extract_footprint_edges(&[piece], &empty);
+        assert_eq!(edges.len(), 4, "should have 4 edges");
+
+        // Shape centroid in world space: x = 10 + 4/2 = 12, y = 20 - 2/2 = 19
+        let centroid = Vec2::new(12.0, 19.0);
+        for ([a, b], normal) in &edges {
+            let mid = (*a + *b) / 2.0;
+            let outward_dot = (mid - centroid).dot(*normal);
+            assert!(
+                outward_dot > 0.0,
+                "Normal {normal:?} for edge {a:?}-{b:?} should point away from centroid (got dot={outward_dot})"
+            );
+        }
     }
 
     #[test]

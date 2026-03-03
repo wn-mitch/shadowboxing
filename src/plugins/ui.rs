@@ -48,7 +48,7 @@ impl Default for UiState {
             defender_units: Vec::new(),
             defender_submitted: false,
             movement_override: 0.0,
-            selected_analysis_mode: AnalysisMode::ZoneCoverage,
+            selected_analysis_mode: AnalysisMode::UnitPositions,
         }
     }
 }

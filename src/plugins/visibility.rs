@@ -3,12 +3,16 @@ use bevy::tasks::{AsyncComputeTaskPool, Task};
 use futures_lite::future;
 
 use crate::events::{AnalysisComplete, ClearAnalysis, TriggerAnalysis};
-use crate::los::{extract_footprint_edges, extract_solid_edges, run_analysis, sample_zone_sources, unit_sources};
+use crate::los::{
+    extract_footprint_edges, extract_solid_edges, run_analysis, sample_zone_sources,
+    unit_sources_with_candidates, N_PERIMETER,
+};
 use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::units::{Player, UnitBase};
 use crate::types::visibility::{
-    AnalysisMode, DangerRegionMesh, SelectedSourceEntity, SelectedUnitForAnalysis, SourceIndex,
-    SourcePointMarker, SourceRayVerts, VisibilityState,
+    AnalysisMode, CandidateIndex, CandidatePointMarker, DangerRegionMesh, SelectedCandidate,
+    SelectedSourceEntity, SelectedUnitForAnalysis, SourceIndex, SourcePointMarker, SourceRayVerts,
+    UnitAnalysisStage, UnitAnalysisState, VisibilityState,
 };
 
 pub struct VisibilityPlugin;
@@ -17,6 +21,8 @@ impl Plugin for VisibilityPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SelectedSourceEntity>()
             .init_resource::<SelectedUnitForAnalysis>()
+            .init_resource::<SelectedCandidate>()
+            .init_resource::<UnitAnalysisState>()
             .add_event::<ClearAnalysis>()
             .add_systems(
                 Update,
@@ -26,9 +32,11 @@ impl Plugin for VisibilityPlugin {
                     on_analysis_complete,
                     clear_analysis,
                     draw_selected_source_rays,
+                    on_candidate_selected,
                     sync_source_point_visibility,
                     sync_danger_region_visibility,
                     apply_unit_fade,
+                    draw_movement_reach_gizmos,
                     draw_collision_boxes,
                 ),
             );
@@ -39,12 +47,15 @@ impl Plugin for VisibilityPlugin {
 #[derive(Component)]
 struct AnalysisTask(Task<(geo::MultiPolygon<f64>, Vec<(Vec2, Vec<Vec2>)>)>);
 
+#[allow(clippy::too_many_arguments)]
 fn trigger_analysis(
     mut commands: Commands,
     mut events: EventReader<TriggerAnalysis>,
     mut vis_state: ResMut<VisibilityState>,
     mut selected: ResMut<SelectedSourceEntity>,
     mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+    mut selected_candidate: ResMut<SelectedCandidate>,
+    mut unit_analysis_state: ResMut<UnitAnalysisState>,
     layouts: Res<TerrainLayouts>,
     active_layout: Res<ActiveLayout>,
     patterns: Res<DeploymentPatterns>,
@@ -53,7 +64,7 @@ fn trigger_analysis(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     overlay_settings: Res<OverlaySettings>,
-    existing_markers: Query<Entity, With<SourcePointMarker>>,
+    old_markers: Query<Entity, Or<(With<SourcePointMarker>, With<CandidatePointMarker>)>>,
 ) {
     for ev in events.read() {
         if vis_state.analyzing {
@@ -63,6 +74,9 @@ fn trigger_analysis(
         vis_state.mode = ev.0;
         selected.0 = None;
         selected_unit.0 = None;
+        selected_candidate.0 = None;
+        unit_analysis_state.stage = UnitAnalysisStage::Idle;
+        unit_analysis_state.candidates.clear();
 
         let pieces = active_layout
             .0
@@ -71,71 +85,158 @@ fn trigger_analysis(
             .map(|l| l.pieces.clone())
             .unwrap_or_default();
 
-        let sources: Vec<Vec2> = match ev.0 {
-            AnalysisMode::ZoneCoverage => active_pattern
-                .0
-                .as_ref()
-                .and_then(|id| patterns.0.iter().find(|p| &p.id == id))
-                .and_then(|pat| pat.zones.iter().find(|z| z.to_player() == Player::Attacker))
-                .map(|z| sample_zone_sources(z))
-                .unwrap_or_default(),
-            AnalysisMode::UnitPositions => unit_bases
-                .iter()
-                .filter(|(_, ub)| ub.player == Player::Attacker)
-                .flat_map(|(t, ub)| {
-                    let center = t.translation.truncate();
-                    let rx = ub.base_shape.radius_x_inches();
-                    let ry = ub.base_shape.radius_y_inches();
-                    let movement = ub.movement_inches.unwrap_or(0.0);
-                    unit_sources(&[(center, rx, ry, movement)])
-                })
-                .collect(),
-        };
-
-        info!("[LOS] mode={:?} sources={} first={:?}", ev.0, sources.len(), sources.first());
-
-        // Despawn old source point markers.
-        for e in existing_markers.iter() {
+        // Despawn old source point markers and candidate markers.
+        for e in old_markers.iter() {
             commands.entity(e).despawn();
         }
 
-        // Spawn new source point markers with SourceIndex for later ray attachment.
-        let marker_mesh = meshes.add(Circle::new(0.08));
-        let marker_mat =
-            materials.add(ColorMaterial::from_color(Color::srgba(1.0, 0.9, 0.1, 0.8)));
-        let init_vis = if overlay_settings.show_source_points {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
+        let sources: Vec<Vec2> = match ev.0 {
+            AnalysisMode::ZoneCoverage => {
+                let srcs = active_pattern
+                    .0
+                    .as_ref()
+                    .and_then(|id| patterns.0.iter().find(|p| &p.id == id))
+                    .and_then(|pat| pat.zones.iter().find(|z| z.to_player() == Player::Attacker))
+                    .map(|z| sample_zone_sources(z))
+                    .unwrap_or_default();
+
+                // Spawn visible yellow source dots immediately for ZoneCoverage.
+                let marker_mesh = meshes.add(Circle::new(0.08));
+                let marker_mat =
+                    materials.add(ColorMaterial::from_color(Color::srgba(1.0, 0.9, 0.1, 0.8)));
+                let init_vis = if overlay_settings.show_source_points {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+                for (i, &pt) in srcs.iter().enumerate() {
+                    commands
+                        .spawn((
+                            Mesh2d(marker_mesh.clone()),
+                            MeshMaterial2d(marker_mat.clone()),
+                            Transform::from_xyz(pt.x, pt.y, 4.5),
+                            init_vis,
+                            SourcePointMarker,
+                            SourceIndex(i),
+                            PickingBehavior::default(),
+                        ))
+                        .observe(
+                            |trigger: Trigger<Pointer<Click>>,
+                             mut selected: ResMut<SelectedSourceEntity>,
+                             ray_verts: Query<&SourceRayVerts>| {
+                                let entity = trigger.entity();
+                                selected.0 = Some(entity);
+                                if let Ok(rays) = ray_verts.get(entity) {
+                                    let verts_str: String = rays
+                                        .endpoints
+                                        .iter()
+                                        .map(|v| format!("({:.3},{:.3})", v.x, v.y))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    info!(
+                                        "[LOS-RAYS] src=({:.3},{:.3}) verts={}",
+                                        rays.source.x, rays.source.y, verts_str
+                                    );
+                                }
+                            },
+                        );
+                }
+
+                srcs
+            }
+
+            AnalysisMode::UnitPositions => {
+                let bases: Vec<(Vec2, f32, f32, f32)> = unit_bases
+                    .iter()
+                    .filter(|(_, ub)| ub.player == Player::Attacker)
+                    .map(|(t, ub)| {
+                        let center = t.translation.truncate();
+                        let rx = ub.base_shape.radius_x_inches();
+                        let ry = ub.base_shape.radius_y_inches();
+                        let movement = ub.movement_inches.unwrap_or(0.0);
+                        (center, rx, ry, movement)
+                    })
+                    .collect();
+
+                let crate::los::UnitCandidateData {
+                    sources: unit_srcs,
+                    candidates,
+                } = unit_sources_with_candidates(&bases, &pieces);
+
+                unit_analysis_state.candidates = candidates;
+                unit_analysis_state.stage = UnitAnalysisStage::SelectCandidate;
+
+                // Spawn green candidate dots.
+                let cand_mesh = meshes.add(Circle::new(0.35));
+                let cand_mat =
+                    materials.add(ColorMaterial::from_color(Color::srgba(0.1, 0.9, 0.2, 0.9)));
+                for (i, cand_info) in unit_analysis_state.candidates.iter().enumerate() {
+                    let pt = cand_info.center;
+                    commands
+                        .spawn((
+                            Mesh2d(cand_mesh.clone()),
+                            MeshMaterial2d(cand_mat.clone()),
+                            Transform::from_xyz(pt.x, pt.y, 4.6),
+                            Visibility::Visible,
+                            CandidatePointMarker,
+                            CandidateIndex(i),
+                            PickingBehavior::default(),
+                        ))
+                        .observe(
+                            |trigger: Trigger<Pointer<Click>>,
+                             mut selected_candidate: ResMut<SelectedCandidate>,
+                             mut unit_analysis_state: ResMut<UnitAnalysisState>,
+                             idx_q: Query<&CandidateIndex>| {
+                                if let Ok(idx) = idx_q.get(trigger.entity()) {
+                                    selected_candidate.0 = Some(idx.0);
+                                    unit_analysis_state.stage = UnitAnalysisStage::SelectSource;
+                                }
+                            },
+                        );
+                }
+
+                // Spawn yellow source dots — hidden until a candidate is selected.
+                let marker_mesh = meshes.add(Circle::new(0.15));
+                let marker_mat =
+                    materials.add(ColorMaterial::from_color(Color::srgba(1.0, 0.9, 0.1, 0.8)));
+                for (i, &pt) in unit_srcs.iter().enumerate() {
+                    commands
+                        .spawn((
+                            Mesh2d(marker_mesh.clone()),
+                            MeshMaterial2d(marker_mat.clone()),
+                            Transform::from_xyz(pt.x, pt.y, 4.5),
+                            Visibility::Hidden,
+                            SourcePointMarker,
+                            SourceIndex(i),
+                            PickingBehavior::default(),
+                        ))
+                        .observe(
+                            |trigger: Trigger<Pointer<Click>>,
+                             mut selected: ResMut<SelectedSourceEntity>,
+                             ray_verts: Query<&SourceRayVerts>| {
+                                let entity = trigger.entity();
+                                selected.0 = Some(entity);
+                                if let Ok(rays) = ray_verts.get(entity) {
+                                    let verts_str: String = rays
+                                        .endpoints
+                                        .iter()
+                                        .map(|v| format!("({:.3},{:.3})", v.x, v.y))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    info!(
+                                        "[LOS-RAYS] src=({:.3},{:.3}) verts={}",
+                                        rays.source.x, rays.source.y, verts_str
+                                    );
+                                }
+                            },
+                        );
+                }
+
+                unit_srcs
+            }
         };
-        for (i, &pt) in sources.iter().enumerate() {
-            commands
-                .spawn((
-                    Mesh2d(marker_mesh.clone()),
-                    MeshMaterial2d(marker_mat.clone()),
-                    Transform::from_xyz(pt.x, pt.y, 4.5),
-                    init_vis,
-                    SourcePointMarker,
-                    SourceIndex(i),
-                    PickingBehavior::default(),
-                ))
-                .observe(
-                    |trigger: Trigger<Pointer<Click>>,
-                     mut selected: ResMut<SelectedSourceEntity>,
-                     ray_verts: Query<&SourceRayVerts>| {
-                        let entity = trigger.entity();
-                        selected.0 = Some(entity);
-                        if let Ok(rays) = ray_verts.get(entity) {
-                            let verts_str: String = rays.endpoints
-                                .iter()
-                                .map(|v| format!("({:.3},{:.3})", v.x, v.y))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            info!("[LOS-RAYS] src=({:.3},{:.3}) verts={}", rays.source.x, rays.source.y, verts_str);
-                        }
-                    },
-                );
-        }
+
+        info!("[LOS] mode={:?} sources={} first={:?}", ev.0, sources.len(), sources.first());
 
         let task_pool = AsyncComputeTaskPool::get();
         let task = task_pool.spawn(async move { run_analysis(sources, &pieces) });
@@ -212,8 +313,11 @@ fn clear_analysis(
     mut vis_state: ResMut<VisibilityState>,
     mut selected: ResMut<SelectedSourceEntity>,
     mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+    mut selected_candidate: ResMut<SelectedCandidate>,
+    mut unit_analysis_state: ResMut<UnitAnalysisState>,
     danger_meshes: Query<Entity, With<DangerRegionMesh>>,
     source_dots: Query<Entity, With<SourcePointMarker>>,
+    candidate_dots: Query<Entity, With<CandidatePointMarker>>,
 ) {
     for _ in events.read() {
         for e in danger_meshes.iter() {
@@ -222,10 +326,16 @@ fn clear_analysis(
         for e in source_dots.iter() {
             commands.entity(e).despawn();
         }
+        for e in candidate_dots.iter() {
+            commands.entity(e).despawn();
+        }
         vis_state.danger_region = None;
         vis_state.danger_area_sq_in = 0.0;
         selected.0 = None;
         selected_unit.0 = None;
+        selected_candidate.0 = None;
+        unit_analysis_state.stage = UnitAnalysisStage::Idle;
+        unit_analysis_state.candidates.clear();
     }
 }
 
@@ -242,11 +352,37 @@ fn draw_selected_source_rays(
     }
 }
 
+/// Shows yellow source dots for the selected candidate; hides all others.
+fn on_candidate_selected(
+    selected: Res<SelectedCandidate>,
+    mut source_q: Query<(&mut Visibility, &SourceIndex), With<SourcePointMarker>>,
+) {
+    if !selected.is_changed() {
+        return;
+    }
+    let Some(cand_idx) = selected.0 else { return };
+    for (mut vis, src_idx) in &mut source_q {
+        *vis = if src_idx.0 / N_PERIMETER == cand_idx {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
 fn sync_source_point_visibility(
     mut q: Query<&mut Visibility, With<SourcePointMarker>>,
     settings: Res<OverlaySettings>,
+    vis_state: Res<VisibilityState>,
+    unit_analysis_state: Res<UnitAnalysisState>,
 ) {
     if !settings.is_changed() {
+        return;
+    }
+    // Don't override staged visibility in UnitPositions flow.
+    if vis_state.mode == AnalysisMode::UnitPositions
+        && unit_analysis_state.stage != UnitAnalysisStage::Idle
+    {
         return;
     }
     let v = vis(settings.show_source_points);
@@ -292,6 +428,8 @@ fn draw_collision_boxes(
 
 fn apply_unit_fade(
     selected: Res<SelectedUnitForAnalysis>,
+    vis_state: Res<VisibilityState>,
+    unit_analysis_state: Res<UnitAnalysisState>,
     unit_q: Query<(&Transform, &UnitBase)>,
     danger_q: Query<&MeshMaterial2d<ColorMaterial>, With<DangerRegionMesh>>,
     mut source_q: Query<(&mut Visibility, Option<&SourceRayVerts>), With<SourcePointMarker>>,
@@ -299,6 +437,12 @@ fn apply_unit_fade(
     overlay: Res<OverlaySettings>,
 ) {
     if !selected.is_changed() {
+        return;
+    }
+    // Don't override staged visibility in UnitPositions flow.
+    if vis_state.mode == AnalysisMode::UnitPositions
+        && unit_analysis_state.stage != UnitAnalysisStage::Idle
+    {
         return;
     }
 
@@ -320,7 +464,7 @@ fn apply_unit_fade(
             };
             let unit_pos = transform.translation.truncate();
             let threshold = unit_base.movement_inches.unwrap_or(0.0)
-                + unit_base
+                + 2.0 * unit_base
                     .base_shape
                     .radius_x_inches()
                     .max(unit_base.base_shape.radius_y_inches())
@@ -338,6 +482,42 @@ fn apply_unit_fade(
                 }
             }
         }
+    }
+}
+
+/// Draws dashed movement-reach ellipses and a footprint ellipse at the selected candidate.
+fn draw_movement_reach_gizmos(
+    state: Res<UnitAnalysisState>,
+    selected: Res<SelectedCandidate>,
+    mut gizmos: Gizmos,
+) {
+    if state.stage == UnitAnalysisStage::Idle {
+        return;
+    }
+    let green = Color::srgba(0.1, 0.9, 0.2, 0.6);
+
+    // Draw base footprint ellipse at each candidate destination.
+    for cand in &state.candidates {
+        draw_dashed_ellipse(&mut gizmos, cand.center, cand.rx, cand.ry, green);
+    }
+
+    // Highlight the selected candidate in yellow.
+    if let Some(idx) = selected.0 {
+        if let Some(cand) = state.candidates.get(idx) {
+            let yellow = Color::srgba(1.0, 0.9, 0.1, 0.8);
+            draw_dashed_ellipse(&mut gizmos, cand.center, cand.rx, cand.ry, yellow);
+        }
+    }
+}
+
+fn draw_dashed_ellipse(gizmos: &mut Gizmos, center: Vec2, rx: f32, ry: f32, color: Color) {
+    const N: usize = 48;
+    for i in (0..N).step_by(2) {
+        let a0 = i as f32 * std::f32::consts::TAU / N as f32;
+        let a1 = (i + 1) as f32 * std::f32::consts::TAU / N as f32;
+        let p0 = center + Vec2::new(a0.cos() * rx, a0.sin() * ry);
+        let p1 = center + Vec2::new(a1.cos() * rx, a1.sin() * ry);
+        gizmos.line_2d(p0, p1, color);
     }
 }
 

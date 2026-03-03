@@ -11,7 +11,7 @@ use crate::types::deployment::DeploymentZone;
 use crate::types::terrain::TerrainPiece;
 
 pub use occupancy::get_terrain_occupancy;
-pub use shapes::{extract_footprint_edges, extract_solid_edges, point_in_shape};
+pub use shapes::{extract_footprint_edges, extract_solid_edges, is_valid_model_placement, point_in_shape};
 pub use vis_poly::{verts_to_geo_polygon, visibility_polygon, OneWayEdge};
 
 const BOARD_INTERIOR_MARGIN: f32 = 0.05;
@@ -62,20 +62,106 @@ pub fn sample_zone_sources(zone: &DeploymentZone) -> Vec<Vec2> {
     zone.sample_perimeter(0.25)
 }
 
-/// Build source points for Mode 2: 24 points on the expanded ellipse perimeter for each base.
-/// Each tuple is (center, rx, ry, movement_inches); the expanded radii are rx+movement and ry+movement.
-pub fn unit_sources(bases: &[(Vec2, f32, f32, f32)]) -> Vec<Vec2> {
+pub const N_CANDIDATES: usize = 24;
+pub const N_PERIMETER: usize = 8;
+
+/// Build source points for Mode 2: base-perimeter LOS with movement reach.
+/// Each tuple is `(center, rx, ry, movement_inches)`.
+///
+/// Algorithm per base:
+/// 1. Candidates: always `center`; if movement > 0, also 24 points on the
+///    expanded ellipse `(rx + movement, ry + movement)`.
+/// 2. Filter: skip non-center candidates that fail `is_valid_model_placement`.
+/// 3. Per valid candidate: emit 8 equally-spaced points on the base ellipse `(rx, ry)`.
+pub fn unit_sources(bases: &[(Vec2, f32, f32, f32)], pieces: &[TerrainPiece]) -> Vec<Vec2> {
     bases
         .iter()
         .flat_map(|&(center, rx, ry, movement)| {
-            let erx = rx + movement;
-            let ery = ry + movement;
-            (0..24).map(move |i| {
-                let angle = i as f32 * std::f32::consts::TAU / 24.0;
-                center + Vec2::new(angle.cos() * erx, angle.sin() * ery)
+            let mut candidates = vec![center];
+            if movement > 0.0 {
+                let erx = rx + movement;
+                let ery = ry + movement;
+                for i in 0..N_CANDIDATES {
+                    let angle = i as f32 * std::f32::consts::TAU / N_CANDIDATES as f32;
+                    candidates.push(center + Vec2::new(angle.cos() * erx, angle.sin() * ery));
+                }
+            }
+
+            // Filter non-center candidates by placement validity.
+            candidates.retain(|&c| c == center || is_valid_model_placement(c, rx, ry, pieces));
+
+            // Emit N_PERIMETER base perimeter points for each valid candidate.
+            candidates.into_iter().flat_map(move |cand| {
+                (0..N_PERIMETER).map(move |i| {
+                    let angle = i as f32 * std::f32::consts::TAU / N_PERIMETER as f32;
+                    cand + Vec2::new(angle.cos() * rx, angle.sin() * ry)
+                })
             })
         })
         .collect()
+}
+
+/// Metadata for a single valid candidate position, used to drive the staged UI.
+pub struct CandidateInfo {
+    /// World position of this candidate (where the base would be placed).
+    pub center: Vec2,
+    /// The attacker unit's current world position (for the movement-reach ring).
+    pub unit_center: Vec2,
+    pub rx: f32,
+    pub ry: f32,
+    /// rx + movement (radius of reach ellipse; equals rx when movement == 0).
+    pub movement_rx: f32,
+    pub movement_ry: f32,
+    /// Index of the source unit in the `bases` slice (for deduplicating reach rings).
+    pub unit_idx: usize,
+}
+
+pub struct UnitCandidateData {
+    /// Flat list of perimeter source points; identical to what `unit_sources` returns.
+    /// `sources[i * N_PERIMETER .. (i+1) * N_PERIMETER]` are the points for `candidates[i]`.
+    pub sources: Vec<Vec2>,
+    pub candidates: Vec<CandidateInfo>,
+}
+
+/// Like `unit_sources` but also returns per-candidate metadata needed for the staged UI.
+pub fn unit_sources_with_candidates(
+    bases: &[(Vec2, f32, f32, f32)],
+    pieces: &[TerrainPiece],
+) -> UnitCandidateData {
+    let mut sources = Vec::new();
+    let mut candidates = Vec::new();
+
+    for (unit_idx, &(center, rx, ry, movement)) in bases.iter().enumerate() {
+        let mut cands = vec![center];
+        if movement > 0.0 {
+            let erx = rx + movement;
+            let ery = ry + movement;
+            for i in 0..N_CANDIDATES {
+                let angle = i as f32 * std::f32::consts::TAU / N_CANDIDATES as f32;
+                cands.push(center + Vec2::new(angle.cos() * erx, angle.sin() * ery));
+            }
+        }
+
+        cands.retain(|&c| c == center || is_valid_model_placement(c, rx, ry, pieces));
+
+        for cand in cands {
+            candidates.push(CandidateInfo {
+                center: cand,
+                unit_center: center,
+                rx,
+                ry,
+                movement_rx: rx + movement,
+                movement_ry: ry + movement,
+                unit_idx,
+            });
+            for i in 0..N_PERIMETER {
+                let angle = i as f32 * std::f32::consts::TAU / N_PERIMETER as f32;
+                sources.push(cand + Vec2::new(angle.cos() * rx, angle.sin() * ry));
+            }
+        }
+    }
+
+    UnitCandidateData { sources, candidates }
 }
 
 /// Compute the area covered by a geo MultiPolygon via scanline rasterization.
@@ -174,36 +260,33 @@ mod tests {
 
     #[test]
     fn unit_sources_no_movement() {
-        // Base radius 1.0, no movement → 24 points on the unit circle around center.
-        let bases = vec![(Vec2::new(5.0, 5.0), 1.0, 1.0, 0.0)];
-        let srcs = unit_sources(&bases);
-        assert_eq!(srcs.len(), 24);
+        // No movement: 1 candidate (center) → 8 base perimeter sources.
+        let bases = vec![(Vec2::new(30.0, 22.0), 1.0, 1.0, 0.0)];
+        let srcs = unit_sources(&bases, &[]);
+        assert_eq!(srcs.len(), 8);
         // Each point should be ~1.0 from center.
         for pt in &srcs {
-            let dist = (*pt - Vec2::new(5.0, 5.0)).length();
+            let dist = (*pt - Vec2::new(30.0, 22.0)).length();
             assert!((dist - 1.0).abs() < 1e-5, "Expected dist 1.0, got {dist}");
         }
     }
 
     #[test]
     fn unit_sources_with_movement() {
-        // Base radius 1.0, movement 6.0 → 24 points at radius 7.0.
-        let bases = vec![(Vec2::new(5.0, 5.0), 1.0, 1.0, 6.0)];
-        let srcs = unit_sources(&bases);
-        assert_eq!(srcs.len(), 24);
-        for pt in &srcs {
-            let dist = (*pt - Vec2::new(5.0, 5.0)).length();
-            assert!((dist - 7.0).abs() < 1e-5, "Expected dist 7.0, got {dist}");
-        }
+        // movement=6.0, no terrain: 1 center + 24 expanded = 25 candidates → 200 sources.
+        let bases = vec![(Vec2::new(30.0, 22.0), 1.0, 1.0, 6.0)];
+        let srcs = unit_sources(&bases, &[]);
+        assert_eq!(srcs.len(), 200); // 25 candidates × 8 perimeter points
     }
 
     #[test]
     fn unit_sources_two_bases() {
+        // 2 bases, no movement: each has 1 candidate → 8 sources each, 16 total.
         let bases = vec![
-            (Vec2::new(0.0, 0.0), 1.0, 1.0, 0.0),
-            (Vec2::new(10.0, 0.0), 1.0, 1.0, 0.0),
+            (Vec2::new(10.0, 10.0), 1.0, 1.0, 0.0),
+            (Vec2::new(50.0, 10.0), 1.0, 1.0, 0.0),
         ];
-        let srcs = unit_sources(&bases);
-        assert_eq!(srcs.len(), 48); // 24 per base
+        let srcs = unit_sources(&bases, &[]);
+        assert_eq!(srcs.len(), 16); // 8 per base
     }
 }
