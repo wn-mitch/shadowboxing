@@ -4,29 +4,31 @@ const BOARD_W: f32 = 60.0;
 const BOARD_H: f32 = 44.0;
 const EPSILON: f32 = 1e-6;
 
-/// Compute the exact visibility polygon from `source` against a set of obstacle edges.
+/// A one-way edge: segment endpoints plus an outward normal.
+/// Rays are blocked only when `dir.dot(normal) > 0` (exiting the footprint).
+pub type OneWayEdge = ([Vec2; 2], Vec2);
+
+/// Compute the exact visibility polygon from `source` against obstacle edges.
+///
+/// `solid_edges`: always block (walls, board boundary).
+/// `one_way_edges`: footprint outlines — rays may enter but not exit.
 ///
 /// Uses the standard O(n log n) angular sweep:
 /// 1. Collect all obstacle vertices and generate angular events (angle - ε, angle, angle + ε).
 /// 2. Sort events by angle.
 /// 3. For each event direction, cast a ray from `source` and record the nearest intersection.
 /// 4. The resulting ordered boundary points form the visibility polygon.
-///
-/// The polygon is implicitly clipped to the board bounds because we add the four corners
-/// as additional "always visible" vertices when nothing else blocks the ray in that direction.
-pub fn visibility_polygon(source: Vec2, obstacle_edges: &[[Vec2; 2]]) -> Vec<Vec2> {
-    // Board boundary edges (treated as obstacles for the sweep).
+pub fn visibility_polygon(
+    source: Vec2,
+    solid_edges: &[[Vec2; 2]],
+    one_way_edges: &[OneWayEdge],
+) -> Vec<Vec2> {
     let board_edges = board_boundary_edges();
-    let all_edges: Vec<[Vec2; 2]> = obstacle_edges
-        .iter()
-        .copied()
-        .chain(board_edges.iter().copied())
-        .collect();
 
-    // Collect angle events from all obstacle vertices (not board corners — they'll be
-    // added indirectly).
-    let mut angles: Vec<f32> = Vec::with_capacity(obstacle_edges.len() * 6);
-    for edge in obstacle_edges {
+    // Collect angle events from solid obstacle vertices and one-way vertices.
+    let mut angles: Vec<f32> =
+        Vec::with_capacity((solid_edges.len() + one_way_edges.len()) * 6);
+    for edge in solid_edges {
         for &v in edge.iter() {
             let angle = (v - source).to_angle();
             angles.push(angle - EPSILON);
@@ -34,7 +36,15 @@ pub fn visibility_polygon(source: Vec2, obstacle_edges: &[[Vec2; 2]]) -> Vec<Vec
             angles.push(angle + EPSILON);
         }
     }
-    // Also add board corner angles so the full boundary is traced.
+    for &(edge, _) in one_way_edges {
+        for &v in edge.iter() {
+            let angle = (v - source).to_angle();
+            angles.push(angle - EPSILON);
+            angles.push(angle);
+            angles.push(angle + EPSILON);
+        }
+    }
+    // Board corners ensure the full boundary is traced.
     for &corner in &board_corners() {
         let angle = (corner - source).to_angle();
         angles.push(angle - EPSILON);
@@ -42,7 +52,6 @@ pub fn visibility_polygon(source: Vec2, obstacle_edges: &[[Vec2; 2]]) -> Vec<Vec
         angles.push(angle + EPSILON);
     }
 
-    // Sort and deduplicate (within float tolerance).
     angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
     angles.dedup_by(|a, b| (*a - *b).abs() < EPSILON * 0.1);
 
@@ -50,25 +59,39 @@ pub fn visibility_polygon(source: Vec2, obstacle_edges: &[[Vec2; 2]]) -> Vec<Vec
 
     for &angle in &angles {
         let dir = Vec2::from_angle(angle);
-        if let Some(hit) = nearest_ray_hit(source, dir, &all_edges) {
+        if let Some(hit) =
+            nearest_ray_hit(source, dir, solid_edges, one_way_edges, &board_edges)
+        {
             polygon_verts.push(hit);
         }
     }
 
-    // Remove near-duplicate consecutive vertices.
     deduplicate_verts(&mut polygon_verts);
-
     polygon_verts
 }
 
-/// Cast a ray from `origin` in `dir` against all edges; return the nearest hit.
-fn nearest_ray_hit(origin: Vec2, dir: Vec2, edges: &[[Vec2; 2]]) -> Option<Vec2> {
+/// Cast a ray from `origin` in `dir`; return the nearest hit point.
+/// Solid edges and board boundaries always block.
+/// One-way edges block only when the ray is exiting (dot(dir, outward) > 0).
+fn nearest_ray_hit(
+    origin: Vec2,
+    dir: Vec2,
+    solid: &[[Vec2; 2]],
+    one_way: &[OneWayEdge],
+    board_edges: &[[Vec2; 2]],
+) -> Option<Vec2> {
     let mut best_t = f32::MAX;
 
-    for &[a, b] in edges {
+    for &[a, b] in solid.iter().chain(board_edges.iter()) {
         if let Some(t) = ray_segment_t(origin, dir, a, b) {
-            if t < best_t {
-                best_t = t;
+            best_t = best_t.min(t);
+        }
+    }
+
+    for &([a, b], normal) in one_way {
+        if dir.dot(normal) > 0.0 {
+            if let Some(t) = ray_segment_t(origin, dir, a, b) {
+                best_t = best_t.min(t);
             }
         }
     }
@@ -136,13 +159,16 @@ pub fn verts_to_geo_polygon(verts: Vec<Vec2>) -> Option<geo::Polygon<f64>> {
     if verts.len() < 3 {
         return None;
     }
+    let round4 = |v: f32| (v as f64 * 1e4).round() / 1e4;
     let mut coords: Vec<Coord<f64>> = verts
         .iter()
-        .map(|v| Coord {
-            x: v.x as f64,
-            y: v.y as f64,
-        })
+        .map(|v| Coord { x: round4(v.x), y: round4(v.y) })
         .collect();
+    // Deduplicate consecutive identical coords produced by snap-rounding.
+    coords.dedup_by(|a, b| a.x == b.x && a.y == b.y);
+    if coords.len() < 3 {
+        return None;
+    }
     coords.push(coords[0]); // close the ring
     Some(Polygon::new(LineString(coords), vec![]))
 }
@@ -155,7 +181,7 @@ mod tests {
     fn open_field_covers_board() {
         // No obstacles → visibility polygon should be the four board corners.
         let source = Vec2::new(30.0, 22.0);
-        let poly = visibility_polygon(source, &[]);
+        let poly = visibility_polygon(source, &[], &[]);
         assert!(poly.len() >= 4, "Should have at least 4 vertices");
 
         // All vertices should be on the board boundary.
@@ -173,7 +199,7 @@ mod tests {
         // A vertical wall at x=10, from y=0 to y=44, blocking the left half.
         let wall = [Vec2::new(10.0, 0.0), Vec2::new(10.0, BOARD_H)];
         let source = Vec2::new(30.0, 22.0);
-        let poly = visibility_polygon(source, &[wall]);
+        let poly = visibility_polygon(source, &[wall], &[]);
 
         // No vertex should be west of x=10 (to the left of the wall).
         for v in &poly {

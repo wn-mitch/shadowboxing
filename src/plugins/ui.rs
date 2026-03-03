@@ -4,10 +4,10 @@ use bevy_egui::{egui, EguiContexts};
 use crate::army_list::base_lookup::BaseDatabase;
 use crate::army_list::parse_listforge;
 use crate::events::{
-    DeleteUnit, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
+    ClearAnalysis, DeleteUnit, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
     TriggerAnalysis,
 };
-use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, PanelWidth, TerrainLayouts};
+use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, TerrainLayouts};
 use crate::types::units::{ArmyUnit, Player};
 use crate::types::visibility::{AnalysisMode, VisibilityState};
 
@@ -40,7 +40,7 @@ impl Default for UiState {
             army_list_text: String::new(),
             army_units: Vec::new(),
             movement_override: 0.0,
-            selected_player: SelectedPlayer::default(),
+            selected_player: SelectedPlayer::Defender,
             selected_analysis_mode: AnalysisMode::ZoneCoverage,
         }
     }
@@ -84,9 +84,11 @@ fn draw_ui_panel(
     mut ev_load_layout: EventWriter<LoadTerrainLayout>,
     mut ev_load_pattern: EventWriter<LoadDeploymentPattern>,
     mut ev_trigger: EventWriter<TriggerAnalysis>,
+    mut ev_clear: EventWriter<ClearAnalysis>,
     mut ev_spawn: EventWriter<SpawnUnit>,
     mut ev_delete: EventWriter<DeleteUnit>,
     mut panel_width: ResMut<PanelWidth>,
+    mut overlay_settings: ResMut<OverlaySettings>,
 ) {
     let ctx = contexts.ctx_mut();
 
@@ -115,6 +117,7 @@ fn draw_ui_panel(
                     &mut active_pattern,
                     &mut ev_load_layout,
                     &mut ev_load_pattern,
+                    &mut overlay_settings,
                 ),
                 UiTab::Army => draw_army_tab(ui, &mut ui_state, &mut ev_spawn),
                 UiTab::Analysis => draw_analysis_tab(
@@ -122,6 +125,7 @@ fn draw_ui_panel(
                     &mut ui_state,
                     &vis_state,
                     &mut ev_trigger,
+                    &mut ev_clear,
                 ),
             }
         });
@@ -137,6 +141,7 @@ fn draw_setup_tab(
     active_pattern: &mut ActivePattern,
     ev_load_layout: &mut EventWriter<LoadTerrainLayout>,
     ev_load_pattern: &mut EventWriter<LoadDeploymentPattern>,
+    overlay_settings: &mut OverlaySettings,
 ) {
     ui.label("Terrain Layout:");
     let current_layout = active_layout.0.clone().unwrap_or_default();
@@ -166,6 +171,16 @@ fn draw_setup_tab(
                 }
             }
         });
+
+    ui.add_space(8.0);
+    ui.collapsing("Display", |ui| {
+        ui.checkbox(&mut overlay_settings.show_source_points, "Source Points (debug)");
+        ui.checkbox(&mut overlay_settings.show_danger_region, "Danger Region");
+        ui.checkbox(&mut overlay_settings.show_deployment_zones, "Deployment Zones");
+        ui.checkbox(&mut overlay_settings.show_validity_rings, "Validity Rings");
+        ui.checkbox(&mut overlay_settings.show_terrain_debug, "Terrain Labels & Dots");
+        ui.checkbox(&mut overlay_settings.show_collision_boxes, "Collision Boxes");
+    });
 }
 
 fn draw_army_tab(
@@ -279,6 +294,7 @@ fn draw_analysis_tab(
     ui_state: &mut UiState,
     vis_state: &VisibilityState,
     ev_trigger: &mut EventWriter<TriggerAnalysis>,
+    ev_clear: &mut EventWriter<ClearAnalysis>,
 ) {
     ui.label("Analysis Mode:");
     ui.horizontal(|ui| {
@@ -331,5 +347,10 @@ fn draw_analysis_tab(
         // Show percentage of 60×44 board = 2640 sq".
         let pct = area / 2640.0 * 100.0;
         ui.label(format!("Coverage: {:.1}% of board", pct));
+
+        ui.add_space(4.0);
+        if ui.button("Clear Analysis").clicked() {
+            ev_clear.send(ClearAnalysis);
+        }
     }
 }

@@ -4,20 +4,19 @@ use std::collections::HashSet;
 use crate::types::terrain::{Mirror, TerrainPiece, TerrainShape};
 
 /// Transform a world point into a piece's local coordinate frame.
-/// Correct order: translate → inverse-mirror → inverse-rotate.
-/// (The original JS bug was applying rotation before mirroring.)
+/// Inverse of T·R·mirror: translate → rotate → mirror.
 pub fn world_to_local(world: Vec2, piece: &TerrainPiece) -> Vec2 {
     let translated = world - piece.world_position();
-    let mirrored = apply_mirror(translated, &piece.mirror);
-    Mat2::from_angle(-piece.rotation.to_radians()) * mirrored
+    let rotated = Mat2::from_angle(piece.rotation.to_radians()) * translated;
+    apply_mirror(rotated, &piece.mirror)
 }
 
 /// Transform a piece-local point into world space.
-/// Correct order: rotate → mirror → translate.
+/// Matches Bevy T·R·S: mirror → rotate → translate.
 pub fn local_to_world(local: Vec2, piece: &TerrainPiece) -> Vec2 {
-    let rotated = Mat2::from_angle(piece.rotation.to_radians()) * local;
-    let mirrored = apply_mirror(rotated, &piece.mirror);
-    mirrored + piece.world_position()
+    let mirrored = apply_mirror(local, &piece.mirror);
+    let rotated = Mat2::from_angle(-piece.rotation.to_radians()) * mirrored;
+    rotated + piece.world_position()
 }
 
 fn apply_mirror(v: Vec2, mirror: &Mirror) -> Vec2 {
@@ -32,10 +31,11 @@ fn apply_mirror(v: Vec2, mirror: &Mirror) -> Vec2 {
 /// `Line` shapes are never considered "containment" regions (they're wall edges).
 pub fn point_in_shape_local(local: Vec2, shape: &TerrainShape) -> bool {
     match shape {
-        TerrainShape::Rectangle { width, height, .. } => {
-            let half_w = width / 2.0;
-            let half_h = height / 2.0;
-            local.x >= -half_w && local.x <= half_w && local.y >= -half_h && local.y <= half_h
+        TerrainShape::Rectangle { width, height, x, y } => {
+            local.x >= *x
+                && local.x <= x + width
+                && local.y >= -(*y + height)
+                && local.y <= -*y
         }
         TerrainShape::Polygon { points } => {
             let verts: Vec<Vec2> = points.iter().map(|p| Vec2::new(p.x, -p.y)).collect();
@@ -79,10 +79,11 @@ fn point_in_polygon_local(p: Vec2, verts: &[Vec2]) -> bool {
     inside
 }
 
-/// Extract all world-space obstacle edge segments from blocking terrain.
-/// `exclude_footprints`: piece IDs whose first shape should be skipped (occupant rule).
-/// Circles are approximated as 32-gons for the obstacle edge set.
-pub fn extract_obstacle_edges(
+/// Extract world-space edges that always block LOS: all walls (shape_idx > 0)
+/// plus any footprint (shape_idx == 0) that is NOT a Rectangle or Polygon
+/// (e.g. a Circle on a solid pillbox — still a hard blocker from all directions).
+/// `exclude_footprints`: piece IDs whose Circle footprint should be skipped (occupant rule).
+pub fn extract_solid_edges(
     pieces: &[TerrainPiece],
     exclude_footprints: &HashSet<&str>,
 ) -> Vec<[Vec2; 2]> {
@@ -94,21 +95,68 @@ pub fn extract_obstacle_edges(
         }
         for (shape_idx, shape) in piece.shapes.iter().enumerate() {
             let is_footprint = shape_idx == 0;
-            if is_footprint && exclude_footprints.contains(piece.id.as_str()) {
-                continue;
+            if is_footprint {
+                let is_rect_or_poly = matches!(
+                    shape,
+                    TerrainShape::Rectangle { .. } | TerrainShape::Polygon { .. }
+                );
+                if is_rect_or_poly {
+                    continue; // These go into footprint (one-way) edges.
+                }
+                if exclude_footprints.contains(piece.id.as_str()) {
+                    continue;
+                }
             }
             let local_verts = shape_local_vertices(shape);
-            let world_verts: Vec<Vec2> = local_verts
-                .iter()
-                .map(|&lv| local_to_world(lv, piece))
-                .collect();
-            // Emit edges from the vertex ring.
+            let world_verts: Vec<Vec2> =
+                local_verts.iter().map(|&lv| local_to_world(lv, piece)).collect();
             let n = world_verts.len();
             for i in 0..n {
-                let a = world_verts[i];
-                let b = world_verts[(i + 1) % n];
-                edges.push([a, b]);
+                edges.push([world_verts[i], world_verts[(i + 1) % n]]);
             }
+        }
+    }
+    edges
+}
+
+/// Extract world-space footprint edges (Rectangle/Polygon at shape_idx == 0)
+/// paired with their outward normals. These are one-way: rays can enter but not exit.
+/// Skips pieces whose ID is in `exclude_footprints` (occupants ignore their own footprint).
+pub fn extract_footprint_edges(
+    pieces: &[TerrainPiece],
+    exclude_footprints: &HashSet<&str>,
+) -> Vec<([Vec2; 2], Vec2)> {
+    let mut edges = Vec::new();
+
+    for piece in pieces {
+        if !piece.blocking {
+            continue;
+        }
+        let Some(shape) = piece.shapes.first() else { continue };
+        let is_rect_or_poly = matches!(
+            shape,
+            TerrainShape::Rectangle { .. } | TerrainShape::Polygon { .. }
+        );
+        if !is_rect_or_poly {
+            continue;
+        }
+        if exclude_footprints.contains(piece.id.as_str()) {
+            continue;
+        }
+
+        let center = piece.world_position();
+        let local_verts = shape_local_vertices(shape);
+        let world_verts: Vec<Vec2> =
+            local_verts.iter().map(|&lv| local_to_world(lv, piece)).collect();
+        let n = world_verts.len();
+        for i in 0..n {
+            let a = world_verts[i];
+            let b = world_verts[(i + 1) % n];
+            let mid = (a + b) / 2.0;
+            let d = (b - a).normalize_or_zero();
+            let perp = Vec2::new(-d.y, d.x);
+            let outward = if (mid - center).dot(perp) >= 0.0 { perp } else { -perp };
+            edges.push(([a, b], outward));
         }
     }
     edges
@@ -120,14 +168,14 @@ pub fn extract_obstacle_edges(
 /// Circle becomes a 32-gon.
 fn shape_local_vertices(shape: &TerrainShape) -> Vec<Vec2> {
     match shape {
-        TerrainShape::Rectangle { width, height, .. } => {
-            let hw = width / 2.0;
-            let hh = height / 2.0;
+        TerrainShape::Rectangle { width, height, x, y } => {
+            // JSON x,y is top-left corner in y-down local space.
+            // In Bevy local (y-up): top edge → -y, bottom edge → -(y + height).
             vec![
-                Vec2::new(-hw, -hh),
-                Vec2::new(hw, -hh),
-                Vec2::new(hw, hh),
-                Vec2::new(-hw, hh),
+                Vec2::new(*x,           -(*y + height)),
+                Vec2::new(x + width,    -(*y + height)),
+                Vec2::new(x + width,    -*y),
+                Vec2::new(*x,           -*y),
             ]
         }
         TerrainShape::Polygon { points } => {
@@ -222,14 +270,15 @@ mod tests {
 
     #[test]
     fn world_to_local_90_rotation() {
-        // After 90° rotation, local +x maps to world +y.
-        // So a world point that is +3 in y from center should appear at local x = +3.
+        // After 90° rotation, local +x maps to world -y (rotate(-90°) * (1,0) = (0,-1) … wait:
+        // local_to_world uses R(-90°): R(-90°)*(1,0) = (0,-1) → world -y for local +x.
+        // So a world point +3 in y from center maps to local (-3, 0).
         let piece = make_piece(90.0, Mirror::None, Vec2::ZERO);
         let world = Vec2::new(0.0, 3.0);
         let local = world_to_local(world, &piece);
-        // local_to_world: rotate(90°) maps local (3, 0) → world (0, 3) ✓
-        // world_to_local: inverse-rotate(-90°) maps world (0, 3) → local (3, 0)
-        assert!((local.x - 3.0).abs() < 1e-4, "local.x={}", local.x);
+        // local_to_world: rotate(-90°) maps local (-3, 0) → world (0, 3) ✓
+        // world_to_local: rotate(+90°) maps world (0, 3) → local (-3, 0)
+        assert!((local.x - (-3.0)).abs() < 1e-4, "local.x={}", local.x);
         assert!(local.y.abs() < 1e-4, "local.y={}", local.y);
     }
 

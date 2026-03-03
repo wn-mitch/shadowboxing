@@ -1,15 +1,32 @@
 use bevy::prelude::*;
 
 use crate::events::LoadDeploymentPattern;
-use crate::resources::DeploymentPatterns;
+use crate::resources::{DeploymentPatterns, OverlaySettings};
 use crate::types::deployment::DeploymentZoneMarker;
 
 pub struct DeploymentPlugin;
 
 impl Plugin for DeploymentPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, on_load_deployment_pattern);
+        app.add_systems(Update, (on_load_deployment_pattern, sync_zone_visibility));
     }
+}
+
+fn sync_zone_visibility(
+    mut q: Query<&mut Visibility, With<DeploymentZoneMarker>>,
+    settings: Res<OverlaySettings>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let v = vis(settings.show_deployment_zones);
+    for mut vis in &mut q {
+        *vis = v;
+    }
+}
+
+fn vis(b: bool) -> Visibility {
+    if b { Visibility::Visible } else { Visibility::Hidden }
 }
 
 fn on_load_deployment_pattern(

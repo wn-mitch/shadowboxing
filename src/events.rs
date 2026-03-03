@@ -1,3 +1,4 @@
+use bevy::math::Vec2;
 use bevy::prelude::*;
 use geo::MultiPolygon;
 
@@ -17,8 +18,13 @@ pub struct LoadDeploymentPattern(pub String);
 pub struct TriggerAnalysis(pub AnalysisMode);
 
 /// Result event from the background analysis task.
+/// Carries the union MultiPolygon and per-source `(clamped_source, polygon_verts)` pairs.
 #[derive(Event, Debug, Clone)]
-pub struct AnalysisComplete(pub MultiPolygon<f64>);
+pub struct AnalysisComplete(pub MultiPolygon<f64>, pub Vec<(Vec2, Vec<Vec2>)>);
+
+/// Clear the current analysis: despawn overlay mesh, source dots, and reset state.
+#[derive(Event, Debug, Clone)]
+pub struct ClearAnalysis;
 
 /// Spawn unit bases on the board.
 #[derive(Event, Debug, Clone)]

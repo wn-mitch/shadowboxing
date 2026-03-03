@@ -1,3 +1,4 @@
+use bevy::math::Vec2;
 use bevy::prelude::*;
 use geo::MultiPolygon;
 
@@ -25,3 +26,22 @@ pub struct VisibilityState {
 /// ECS marker for the mesh entity that renders the danger region.
 #[derive(Component, Debug)]
 pub struct DangerRegionMesh;
+
+/// ECS marker for debug dots showing LOS source points.
+#[derive(Component)]
+pub struct SourcePointMarker;
+
+/// Index into the per-source data vec; attached to each SourcePointMarker at spawn time.
+#[derive(Component)]
+pub struct SourceIndex(pub usize);
+
+/// Ray endpoints from visibility_polygon; attached to a source dot after analysis completes.
+#[derive(Component)]
+pub struct SourceRayVerts {
+    pub source: Vec2,
+    pub endpoints: Vec<Vec2>,
+}
+
+/// Which source dot (if any) is selected for ray display.
+#[derive(Resource, Default)]
+pub struct SelectedSourceEntity(pub Option<Entity>);

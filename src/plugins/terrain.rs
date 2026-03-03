@@ -1,15 +1,36 @@
 use bevy::prelude::*;
 
 use crate::events::LoadTerrainLayout;
-use crate::resources::TerrainLayouts;
+use crate::resources::{OverlaySettings, TerrainLayouts};
 use crate::types::terrain::{TerrainPiece, TerrainShape};
 
 pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (on_load_terrain_layout,));
+        app.add_systems(Update, (on_load_terrain_layout, sync_terrain_debug));
     }
+}
+
+/// ECS marker for terrain debug entities (name label, origin dot, debug info label).
+#[derive(Component)]
+pub struct TerrainDebugMarker;
+
+fn sync_terrain_debug(
+    mut q: Query<&mut Visibility, With<TerrainDebugMarker>>,
+    settings: Res<OverlaySettings>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let v = vis(settings.show_terrain_debug);
+    for mut vis in &mut q {
+        *vis = v;
+    }
+}
+
+fn vis(b: bool) -> Visibility {
+    if b { Visibility::Visible } else { Visibility::Hidden }
 }
 
 /// ECS marker on each terrain entity.
@@ -95,6 +116,7 @@ fn spawn_terrain_piece(
             TextColor(Color::WHITE),
             Transform::from_xyz(label_offset.x, label_offset.y, 0.5)
                 .with_scale(Vec3::splat(0.08)),
+            TerrainDebugMarker,
         ))
         .id();
     commands.entity(parent).add_child(label);
@@ -118,6 +140,7 @@ fn spawn_terrain_piece(
             )))),
             Transform::from_xyz(0.0, 0.0, 3.0),
             PickingBehavior::IGNORE,
+            TerrainDebugMarker,
         ))
         .id();
     commands.entity(parent).add_child(dot);
@@ -131,6 +154,7 @@ fn spawn_terrain_piece(
         },
         TextColor(Color::BLACK),
         Transform::from_xyz(pos.x + 0.3, pos.y, 3.5).with_scale(Vec3::splat(0.08)),
+        TerrainDebugMarker,
     ));
 }
 

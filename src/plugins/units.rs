@@ -1,13 +1,13 @@
 use bevy::prelude::*;
 
 use crate::events::SpawnUnit;
-use crate::resources::{ActivePattern, BoardConfig, DeploymentPatterns, TerrainLayouts, ActiveLayout};
+use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use crate::types::terrain::TerrainPiece;
 use crate::types::units::{BaseShape, Player, UnitBase};
-use crate::los::shapes::{extract_obstacle_edges, point_in_shape};
+use crate::los::shapes::point_in_shape;
 
 #[derive(Component)]
-struct ZoneRingMarker;
+pub struct ZoneRingMarker;
 
 pub struct UnitsPlugin;
 
@@ -15,9 +15,26 @@ impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (on_spawn_unit, handle_drag, update_validity_indicators),
+            (on_spawn_unit, handle_drag, update_validity_indicators, sync_validity_rings),
         );
     }
+}
+
+fn sync_validity_rings(
+    mut q: Query<&mut Visibility, With<ZoneRingMarker>>,
+    settings: Res<OverlaySettings>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    let v = vis(settings.show_validity_rings);
+    for mut vis in &mut q {
+        *vis = v;
+    }
+}
+
+fn vis(b: bool) -> Visibility {
+    if b { Visibility::Visible } else { Visibility::Hidden }
 }
 
 fn on_spawn_unit(
@@ -97,7 +114,6 @@ fn find_valid_spawn_pos(
     };
 
     let (min_x, min_y, max_x, max_y) = bounding_box(use_verts);
-    let obstacle_edges = extract_obstacle_edges(pieces, &Default::default());
 
     // Scan left-to-right, top-to-bottom at 1" spacing.
     let mut y = min_y + ry;
@@ -276,6 +292,7 @@ fn update_validity_indicators(
     mut rings: Query<&mut Visibility, With<ZoneRingMarker>>,
     patterns: Res<DeploymentPatterns>,
     active_pattern: Res<ActivePattern>,
+    overlay_settings: Res<OverlaySettings>,
 ) {
     let zones = active_pattern
         .0
@@ -298,7 +315,7 @@ fn update_validity_indicators(
 
         for &child in children.iter() {
             if let Ok(mut vis) = rings.get_mut(child) {
-                *vis = if in_zone {
+                *vis = if !overlay_settings.show_validity_rings || in_zone {
                     Visibility::Hidden
                 } else {
                     Visibility::Visible

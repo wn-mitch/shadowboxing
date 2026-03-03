@@ -38,3 +38,26 @@ impl Default for PanelWidth {
         Self(256.0)
     }
 }
+
+#[derive(Resource)]
+pub struct OverlaySettings {
+    pub show_source_points: bool,
+    pub show_danger_region: bool,
+    pub show_deployment_zones: bool,
+    pub show_validity_rings: bool,
+    pub show_terrain_debug: bool,
+    pub show_collision_boxes: bool,
+}
+
+impl Default for OverlaySettings {
+    fn default() -> Self {
+        Self {
+            show_source_points: true,
+            show_danger_region: true,
+            show_deployment_zones: true,
+            show_validity_rings: true,
+            show_terrain_debug: true,
+            show_collision_boxes: false,
+        }
+    }
+}

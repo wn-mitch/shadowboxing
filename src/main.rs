@@ -20,7 +20,7 @@ use plugins::{
     units::UnitsPlugin,
     visibility::VisibilityPlugin,
 };
-use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, TerrainLayouts};
+use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
 use types::{
     deployment::DeploymentPatternList,
     terrain::TerrainLayout,
@@ -43,6 +43,7 @@ fn main() {
         .init_resource::<ActiveLayout>()
         .init_resource::<ActivePattern>()
         .init_resource::<VisibilityState>()
+        .init_resource::<OverlaySettings>()
         // Events.
         .add_event::<LoadTerrainLayout>()
         .add_event::<LoadDeploymentPattern>()
