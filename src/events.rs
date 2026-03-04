@@ -83,3 +83,7 @@ pub struct UnitMoved {
     pub from: Vec2,
     pub to: Vec2,
 }
+
+/// Advance to the next game phase (or end the turn after Fight).
+#[derive(Event, Debug, Clone)]
+pub struct AdvancePhase;

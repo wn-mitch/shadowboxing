@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 
+use crate::army_list::base_lookup::BaseDatabase;
 use crate::events::{ClearPlayerUnits, RemoveModelUnits, SpawnUnit, UnitMoved};
-use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, TerrainLayouts};
+use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, PhaseState, TerrainLayouts};
+use crate::types::phase::GamePhase;
 use crate::types::terrain::TerrainPiece;
-use crate::types::timeline::{AdvanceIndicator, GameTimeline, MovementRangeRing};
+use crate::types::timeline::{AdvanceIndicator, ChargeRangeRing, GameTimeline, MovementRangeRing};
 use crate::types::units::{BaseShape, Player, UnitBase};
 use crate::types::visibility::{AnalysisMode, SelectedUnitForAnalysis, VisibilityState};
 use crate::los::shapes::point_in_shape;
@@ -26,8 +28,12 @@ impl Plugin for UnitsPlugin {
                     sync_validity_rings,
                     on_clear_player_units,
                     on_remove_model_units,
-                    handle_unit_click_for_fade,
+                    handle_unit_click,
+                    confirm_kills,
+                    confirm_action_flag,
                     sync_unit_tint,
+                    sync_killed_unit_tint,
+                    sync_charge_ring_position,
                 ),
             );
     }
@@ -234,16 +240,16 @@ fn grey_tint(color: Color) -> Color {
 
 fn sync_unit_tint(
     timeline: Res<GameTimeline>,
+    phase_state: Res<PhaseState>,
     units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let active = timeline.active_player_in_live_view();
-
     for (unit_base, mat_handle) in &units {
         let target = if timeline.locked {
-            match active {
-                Some(p) if p == unit_base.player => unit_base.color,
-                _ => grey_tint(unit_base.color),
+            if unit_base.player == phase_state.active_player {
+                unit_base.color
+            } else {
+                grey_tint(unit_base.color)
             }
         } else {
             unit_base.color
@@ -254,6 +260,21 @@ fn sync_unit_tint(
         if needs_update {
             if let Some(mat) = materials.get_mut(mat_handle.id()) {
                 mat.color = target;
+            }
+        }
+    }
+}
+
+/// Sets killed units to 30% opacity so they fade without disappearing immediately.
+fn sync_killed_unit_tint(
+    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>), Changed<UnitBase>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (unit_base, mat_handle) in &units {
+        if unit_base.is_killed {
+            if let Some(mat) = materials.get_mut(mat_handle.id()) {
+                let s = unit_base.color.to_srgba();
+                mat.color = Color::srgba(s.red, s.green, s.blue, 0.3);
             }
         }
     }
@@ -311,6 +332,10 @@ fn spawn_base(
                 player,
                 color,
                 last_valid_pos: pos,
+                has_advanced: false,
+                is_performing_action: false,
+                is_killed: false,
+                killed_this_phase: false,
             },
             PickingBehavior::default(),
         ))
@@ -426,27 +451,31 @@ fn on_remove_model_units(
     }
 }
 
-fn handle_unit_click_for_fade(
+fn handle_unit_click(
     mut click_events: EventReader<Pointer<Click>>,
-    bases: Query<Entity, With<UnitBase>>,
+    bases: Query<(Entity, &UnitBase, &Transform)>,
     vis_state: Res<VisibilityState>,
     mut selected_unit: ResMut<SelectedUnitForAnalysis>,
     timeline: Res<GameTimeline>,
+    mut phase_state: ResMut<PhaseState>,
     mut ring_query: Query<&mut Visibility, With<MovementRangeRing>>,
+    base_db: Option<Res<BaseDatabase>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for ev in click_events.read() {
-        if bases.get(ev.target).is_err() {
+        let Ok((clicked_entity, clicked_unit, clicked_transform)) = bases.get(ev.target) else {
             continue;
-        }
+        };
 
-        // When deployment is locked, show the clicked unit's standalone range rings.
-        if timeline.locked {
-            let to_show = timeline.ring_entities.get(&ev.target).copied();
-            // Hide all rings first.
+        // When deployment is locked, show the clicked unit's standalone range rings
+        // (only in Movement phase where range rings are meaningful).
+        if timeline.locked && phase_state.phase == GamePhase::Movement {
+            let to_show = timeline.ring_entities.get(&clicked_entity).copied();
             for mut vis in &mut ring_query {
                 *vis = Visibility::Hidden;
             }
-            // Show the pair for the clicked unit.
             if let Some([nr, ar]) = to_show {
                 if let Ok(mut v) = ring_query.get_mut(nr) {
                     *v = Visibility::Visible;
@@ -457,14 +486,167 @@ fn handle_unit_click_for_fade(
             }
         }
 
-        if vis_state.mode != AnalysisMode::UnitPositions {
+        // Analysis mode selection (unchanged).
+        if vis_state.mode == AnalysisMode::UnitPositions && !timeline.locked {
+            selected_unit.0 = match selected_unit.0 {
+                Some(e) if e == clicked_entity => None,
+                _ => Some(clicked_entity),
+            };
+        }
+
+        if !timeline.locked {
             continue;
         }
-        // Toggle: clicking the same unit again deselects it.
-        selected_unit.0 = match selected_unit.0 {
-            Some(e) if e == ev.target => None,
-            _ => Some(ev.target),
-        };
+
+        let active_player = phase_state.active_player;
+
+        match phase_state.phase {
+            GamePhase::Shooting => {
+                let is_friendly = clicked_unit.player == active_player;
+                let is_enemy = clicked_unit.player != active_player;
+
+                if is_friendly && !clicked_unit.is_killed {
+                    // Changing shooter clears the weapon ring.
+                    if let Some(old_ring) = phase_state.shooter_range_ring.take() {
+                        commands.entity(old_ring).despawn_recursive();
+                    }
+                    phase_state.selected_shooter = Some(clicked_entity);
+                    phase_state.selected_weapon_idx = None;
+                    phase_state.pending_target = None;
+                } else if is_enemy && !clicked_unit.is_killed {
+                    // Set as pending target (confirmed via UI button).
+                    if phase_state.selected_shooter.is_some() && phase_state.selected_weapon_idx.is_some() {
+                        let in_range = if let Some(db) = base_db.as_ref() {
+                            if let Some(shooter_entity) = phase_state.selected_shooter {
+                                if let Ok((_, shooter_unit, shooter_transform)) = bases.get(shooter_entity) {
+                                    if let Some(wi) = phase_state.selected_weapon_idx {
+                                        let weapons: Vec<_> = db.weapons_for_unit(&shooter_unit.unit_name)
+                                            .iter()
+                                            .filter(|w| w.range.trim() != "Melee")
+                                            .collect();
+                                        if let Some(weapon) = weapons.get(wi) {
+                                            if let Some(range) = BaseDatabase::weapon_range_inches(weapon) {
+                                                let shooter_r = shooter_unit.base_shape.radius_x_inches()
+                                                    .max(shooter_unit.base_shape.radius_y_inches());
+                                                let target_r = clicked_unit.base_shape.radius_x_inches()
+                                                    .max(clicked_unit.base_shape.radius_y_inches());
+                                                let center_dist = shooter_transform
+                                                    .translation
+                                                    .truncate()
+                                                    .distance(clicked_transform.translation.truncate());
+                                                let edge_dist = (center_dist - shooter_r - target_r).max(0.0);
+                                                edge_dist <= range
+                                            } else { false }
+                                        } else { false }
+                                    } else { false }
+                                } else { false }
+                            } else { false }
+                        } else { true }; // no db = always in range
+
+                        if in_range {
+                            phase_state.pending_target = Some(clicked_entity);
+                        }
+                    }
+                }
+            }
+
+            GamePhase::Charge => {
+                let is_friendly = clicked_unit.player == active_player;
+                let is_enemy = clicked_unit.player != active_player;
+
+                if is_friendly && !clicked_unit.is_killed && !clicked_unit.has_advanced && !clicked_unit.is_performing_action {
+                    // Select as the charger; spawn/replace the charge ring.
+                    phase_state.declared_charger = Some(clicked_entity);
+                    phase_state.declared_charge_target = None;
+                    phase_state.charge_declared = None;
+
+                    // Despawn old charge ring if any.
+                    if let Some(old) = phase_state.charge_ring_entity.take() {
+                        commands.entity(old).despawn_recursive();
+                    }
+
+                    // Spawn 12" orange charge range ring, offset by charger's base radius so
+                    // the ring represents the base edge reaching 12" out.
+                    let charger_radius = clicked_unit.base_shape.radius_x_inches()
+                        .max(clicked_unit.base_shape.radius_y_inches());
+                    let ring_r = 12.0 + charger_radius;
+                    let pos = clicked_transform.translation.truncate();
+                    let ring_entity = commands
+                        .spawn((
+                            Mesh2d(meshes.add(Annulus::new(ring_r, ring_r + 0.12))),
+                            MeshMaterial2d(materials.add(ColorMaterial::from_color(
+                                Color::srgba(1.0, 0.5, 0.0, 0.85),
+                            ))),
+                            Transform::from_xyz(pos.x, pos.y, 0.5),
+                            Visibility::Visible,
+                            ChargeRangeRing,
+                            PickingBehavior::IGNORE,
+                        ))
+                        .id();
+                    phase_state.charge_ring_entity = Some(ring_entity);
+                } else if is_enemy && !clicked_unit.is_killed {
+                    if phase_state.declared_charger.is_some() {
+                        phase_state.declared_charge_target = Some(clicked_entity);
+                    }
+                }
+            }
+
+            GamePhase::Fight => {
+                // In Fight both sides pile in — any non-killed unit is a valid kill target.
+                if !clicked_unit.is_killed {
+                    phase_state.pending_kill_target = Some(clicked_entity);
+                }
+            }
+
+            _ => {}
+        }
+    }
+}
+
+/// Keep the charge ring centred on the declared charger's current position.
+fn sync_charge_ring_position(
+    phase_state: Res<PhaseState>,
+    units: Query<&Transform, With<UnitBase>>,
+    mut rings: Query<&mut Transform, (With<ChargeRangeRing>, Without<UnitBase>)>,
+) {
+    let Some(charger) = phase_state.declared_charger else {
+        return;
+    };
+    let Some(ring_entity) = phase_state.charge_ring_entity else {
+        return;
+    };
+    if let Ok(unit_t) = units.get(charger) {
+        if let Ok(mut ring_t) = rings.get_mut(ring_entity) {
+            ring_t.translation.x = unit_t.translation.x;
+            ring_t.translation.y = unit_t.translation.y;
+        }
+    }
+}
+
+/// Applies the confirmed kill from the UI: sets `is_killed` and `killed_this_phase`.
+fn confirm_kills(
+    mut phase_state: ResMut<PhaseState>,
+    mut units: Query<&mut UnitBase>,
+) {
+    let Some(entity) = phase_state.confirmed_kill.take() else {
+        return;
+    };
+    if let Ok(mut unit) = units.get_mut(entity) {
+        unit.is_killed = true;
+        unit.killed_this_phase = true;
+    }
+}
+
+/// Applies the "performing action" flag from the UI.
+fn confirm_action_flag(
+    mut phase_state: ResMut<PhaseState>,
+    mut units: Query<&mut UnitBase>,
+) {
+    let Some(entity) = phase_state.confirm_action.take() else {
+        return;
+    };
+    if let Ok(mut unit) = units.get_mut(entity) {
+        unit.is_performing_action = true;
     }
 }
 
@@ -478,8 +660,16 @@ fn handle_drag(
     active_layout: Res<ActiveLayout>,
     camera_q: Query<(&Camera, &GlobalTransform)>,
     timeline: Res<GameTimeline>,
+    phase_state: Res<PhaseState>,
     mut ev_unit_moved: EventWriter<UnitMoved>,
 ) {
+    // Gate: drag is only valid in Movement or Charge phases (or pre-lock).
+    if timeline.locked && !phase_state.phase.drag_allowed() {
+        // Drain events without processing.
+        for _ in drag_events.read() {}
+        for _ in drag_end_events.read() {}
+        return;
+    }
     let terrain_pieces: Vec<TerrainPiece> = active_layout
         .0
         .as_ref()
@@ -494,18 +684,23 @@ fn handle_drag(
         .collect();
 
     for ev in drag_events.read() {
-        let Ok((_, mut transform, mut unit_base)) = bases.get_mut(ev.target) else {
+        let Ok((entity, mut transform, unit_base)) = bases.get_mut(ev.target) else {
             continue;
         };
         if unit_base.locked {
             continue;
         }
         // Skip units that don't belong to the active player's turn.
-        if timeline.locked {
-            if let Some(active) = timeline.active_player_in_live_view() {
-                if unit_base.player != active {
-                    continue;
-                }
+        if timeline.locked && unit_base.player != phase_state.active_player {
+            continue;
+        }
+        // In Charge phase, only the declared charger may be dragged.
+        if timeline.locked && phase_state.phase == GamePhase::Charge {
+            if phase_state.charge_declared != Some(true) {
+                continue;
+            }
+            if phase_state.declared_charger != Some(entity) {
+                continue;
             }
         }
 
@@ -546,13 +741,19 @@ fn handle_drag(
             continue;
         }
         // Snap back if this unit doesn't belong to the active player's turn.
-        if timeline.locked {
-            if let Some(active) = timeline.active_player_in_live_view() {
-                if unit_base.player != active {
-                    transform.translation.x = unit_base.last_valid_pos.x;
-                    transform.translation.y = unit_base.last_valid_pos.y;
-                    continue;
-                }
+        if timeline.locked && unit_base.player != phase_state.active_player {
+            transform.translation.x = unit_base.last_valid_pos.x;
+            transform.translation.y = unit_base.last_valid_pos.y;
+            continue;
+        }
+        // In Charge phase, snap back if not the declared charger after success.
+        if timeline.locked && phase_state.phase == GamePhase::Charge {
+            let is_charger = phase_state.declared_charger == Some(entity)
+                && phase_state.charge_declared == Some(true);
+            if !is_charger {
+                transform.translation.x = unit_base.last_valid_pos.x;
+                transform.translation.y = unit_base.last_valid_pos.y;
+                continue;
             }
         }
 

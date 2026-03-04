@@ -1,15 +1,16 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::army_list::base_lookup::BaseDatabase;
+use crate::army_list::base_lookup::{BaseDatabase, BaseDatabase as BD};
 use crate::army_list::parse_listforge;
 use crate::events::{
-    ClearAnalysis, ClearPlayerUnits, LockDeployment, LoadDeploymentPattern, LoadTerrainLayout,
-    RecordSnapshot, RemoveModelUnits, RewindToSnapshot, SpawnUnit, TriggerAnalysis,
+    AdvancePhase, ClearAnalysis, ClearPlayerUnits, LockDeployment, LoadDeploymentPattern,
+    LoadTerrainLayout, RemoveModelUnits, RewindToSnapshot, SpawnUnit, TriggerAnalysis,
 };
-use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, RightPanelWidth, TerrainLayouts};
-use crate::types::timeline::GameTimeline;
-use crate::types::units::{ArmyUnit, Player};
+use crate::resources::{ActiveLayout, ActivePattern, DeploymentPatterns, OverlaySettings, PanelWidth, PhaseState, RightPanelWidth, TerrainLayouts};
+use crate::types::phase::GamePhase;
+use crate::types::timeline::{GameTimeline, ShooterRangeRing};
+use crate::types::units::{ArmyUnit, Player, UnitBase};
 use crate::types::visibility::{AnalysisMode, VisibilityState};
 
 pub struct UiPlugin;
@@ -127,7 +128,7 @@ fn draw_left_panel(
 
 fn draw_setup_tab(
     ui: &mut egui::Ui,
-    ui_state: &mut UiState,
+    _ui_state: &mut UiState,
     layouts: &TerrainLayouts,
     patterns: &DeploymentPatterns,
     active_layout: &mut ActiveLayout,
@@ -181,6 +182,7 @@ fn import_list(text: &str, player: Player) -> Vec<ArmyUnit> {
     let base_db = BaseDatabase::load(
         include_str!("../../assets/Datasheets.json"),
         include_str!("../../assets/Datasheets_models.json"),
+        include_str!("../../assets/Datasheets_wargear.json"),
     );
     let color = match player {
         Player::Attacker => ATTACKER_COLOR,
@@ -346,14 +348,20 @@ fn draw_right_panel(
     mut timeline: ResMut<GameTimeline>,
     mut right_panel_width: ResMut<RightPanelWidth>,
     mut ev_lock: EventWriter<LockDeployment>,
-    mut ev_record: EventWriter<RecordSnapshot>,
     mut ev_rewind: EventWriter<RewindToSnapshot>,
+    mut ev_advance: EventWriter<AdvancePhase>,
+    mut phase_state: ResMut<PhaseState>,
+    units: Query<(Entity, &UnitBase, &Transform)>,
+    base_db: Option<Res<BaseDatabase>>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let ctx = contexts.ctx_mut();
 
     let panel = egui::SidePanel::right("timeline_panel")
         .min_width(200.0)
-        .max_width(280.0)
+        .max_width(300.0)
         .show(ctx, |ui| {
             ui.heading("Timeline");
             ui.separator();
@@ -374,48 +382,390 @@ fn draw_right_panel(
                 ui.add_space(8.0);
                 if ui.button("Lock In Deployment").clicked() {
                     ev_lock.send(LockDeployment);
+                    // Initialise turn counter.
+                    phase_state.turn_number = 1;
                 }
-            } else {
-                // ── Post-lock ─────────────────────────────────────
-                ui.label("History:");
-                let snap_count = timeline.snapshots.len();
-                let current = timeline.current_index;
+                return;
+            }
 
-                egui::ScrollArea::vertical()
-                    .id_salt("timeline_scroll")
-                    .max_height(300.0)
-                    .show(ui, |ui| {
-                        for (idx, snapshot) in timeline.snapshots.iter().enumerate() {
-                            let selected = current == idx;
-                            if ui.selectable_label(selected, &snapshot.label).clicked() {
-                                ev_rewind.send(RewindToSnapshot(idx));
-                            }
-                        }
-                        let live_selected = current >= snap_count;
-                        if ui.selectable_label(live_selected, "▶ Live").clicked() {
-                            ev_rewind.send(RewindToSnapshot(snap_count));
-                        }
-                    });
+            // ── Snapshot history ──────────────────────────────────
+            let snap_count = timeline.snapshots.len();
+            let current = timeline.current_index;
+            let in_live = current >= snap_count;
 
-                ui.add_space(8.0);
-                let phase_count = timeline.snapshots.len().saturating_sub(1);
-                let turn_num = phase_count / 2 + 1;
-                let player_str = match timeline.active_player_in_live_view() {
-                    Some(Player::Attacker) => "Attacker",
-                    Some(Player::Defender) => "Defender",
-                    None => "?",
-                };
-                let record_label =
-                    format!("Record Turn {} — {} Move", turn_num, player_str);
-                let snapshot_label =
-                    format!("Turn {} — {} Move", turn_num, player_str);
-                if ui.button(record_label).clicked() {
-                    ev_record.send(RecordSnapshot { label: snapshot_label });
+            ui.label("History:");
+            egui::ScrollArea::vertical()
+                .id_salt("timeline_scroll")
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for (idx, snapshot) in timeline.snapshots.iter().enumerate() {
+                        let selected = current == idx;
+                        if ui.selectable_label(selected, &snapshot.label).clicked() {
+                            ev_rewind.send(RewindToSnapshot(idx));
+                        }
+                    }
+                    let live_selected = in_live;
+                    if ui.selectable_label(live_selected, "▶ Live").clicked() {
+                        ev_rewind.send(RewindToSnapshot(snap_count));
+                    }
+                });
+
+            if !in_live {
+                return; // historical view — phase UI is hidden
+            }
+
+            ui.separator();
+
+            // ── Phase panel ───────────────────────────────────────
+            let turn = phase_state.turn_number.max(1);
+            ui.strong(format!("Turn {} — {}", turn, phase_state.active_player.label()));
+            ui.strong(format!("═══ {} ═══", phase_state.phase.label()));
+            ui.separator();
+
+            match phase_state.phase {
+                GamePhase::Command => {
+                    ui.label("(No actions in Command phase)");
+                    ui.add_space(8.0);
+                    if ui.button("End Command Phase →").clicked() {
+                        ev_advance.send(AdvancePhase);
+                    }
+                }
+
+                GamePhase::Movement => {
+                    draw_movement_phase_ui(ui, &units, &timeline, &phase_state);
+                    ui.add_space(8.0);
+                    if ui.button("End Movement Phase →").clicked() {
+                        ev_advance.send(AdvancePhase);
+                    }
+                }
+
+                GamePhase::Shooting => {
+                    draw_shooting_phase_ui(
+                        ui, &units, &mut phase_state, base_db.as_deref(),
+                        &mut commands, &mut meshes, &mut materials,
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("End Shooting Phase →").clicked() {
+                        ev_advance.send(AdvancePhase);
+                    }
+                }
+
+                GamePhase::Charge => {
+                    draw_charge_phase_ui(ui, &units, &mut phase_state);
+                    ui.add_space(8.0);
+                    if ui.button("End Charge Phase →").clicked() {
+                        ev_advance.send(AdvancePhase);
+                    }
+                }
+
+                GamePhase::Fight => {
+                    draw_fight_phase_ui(ui, &units, &mut phase_state);
+                    ui.add_space(8.0);
+                    if ui.button("End Turn →").clicked() {
+                        ev_advance.send(AdvancePhase);
+                    }
                 }
             }
         });
 
     right_panel_width.0 = panel.response.rect.width();
+}
+
+fn draw_movement_phase_ui(
+    ui: &mut egui::Ui,
+    units: &Query<(Entity, &UnitBase, &Transform)>,
+    timeline: &GameTimeline,
+    phase_state: &PhaseState,
+) {
+    ui.label("Units:");
+    egui::ScrollArea::vertical()
+        .id_salt("move_scroll")
+        .max_height(160.0)
+        .show(ui, |ui| {
+            for (entity, unit, transform) in units.iter() {
+                if unit.player != phase_state.active_player {
+                    continue;
+                }
+                if unit.is_killed {
+                    continue;
+                }
+                let pos = transform.translation.truncate();
+                let start = timeline.phase_start_positions.get(&entity).copied().unwrap_or(pos);
+                let dist = pos.distance(start);
+                let moved = dist > 0.05;
+                let adv = unit.movement_inches.map(|m| dist > m + 0.01).unwrap_or(false);
+
+                let label = if adv {
+                    format!("{} [ADV {:.1}\"]", unit.model_name, dist)
+                } else if moved {
+                    format!("{} [{:.1}\"]", unit.model_name, dist)
+                } else {
+                    unit.model_name.clone()
+                };
+                ui.label(label);
+            }
+        });
+}
+
+fn draw_shooting_phase_ui(
+    ui: &mut egui::Ui,
+    units: &Query<(Entity, &UnitBase, &Transform)>,
+    phase_state: &mut PhaseState,
+    base_db: Option<&BaseDatabase>,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+) {
+    // Friendly unit list — select shooter.
+    ui.label("Select shooter:");
+    egui::ScrollArea::vertical()
+        .id_salt("shoot_units")
+        .max_height(120.0)
+        .show(ui, |ui| {
+            for (entity, unit, _) in units.iter() {
+                if unit.player != phase_state.active_player {
+                    continue;
+                }
+                if unit.is_killed || unit.has_advanced || unit.is_performing_action {
+                    continue;
+                }
+                let selected = phase_state.selected_shooter == Some(entity);
+                if ui.selectable_label(selected, &unit.model_name).clicked() {
+                    // Changing shooter clears the weapon ring.
+                    if let Some(old_ring) = phase_state.shooter_range_ring.take() {
+                        commands.entity(old_ring).despawn_recursive();
+                    }
+                    phase_state.selected_shooter = Some(entity);
+                    phase_state.selected_weapon_idx = None;
+                    phase_state.pending_target = None;
+                }
+            }
+        });
+
+    // Weapon selection.
+    if let Some(shooter_entity) = phase_state.selected_shooter {
+        if let Ok((_, shooter_unit, shooter_transform)) = units.get(shooter_entity) {
+            ui.separator();
+            ui.label(format!("Shooter: {}", shooter_unit.model_name));
+
+            if let Some(db) = base_db {
+                // Filter out melee-only weapons.
+                let weapons: Vec<_> = db.weapons_for_unit(&shooter_unit.unit_name)
+                    .iter()
+                    .filter(|w| w.range.trim() != "Melee")
+                    .collect();
+
+                if weapons.is_empty() {
+                    ui.label("(no ranged weapons)");
+                } else {
+                    ui.label("Weapons:");
+                    for (i, w) in weapons.iter().enumerate() {
+                        let range_str = BD::weapon_range_inches(w)
+                            .map(|r| format!("{}\"", r as u32))
+                            .unwrap_or_else(|| w.range.clone());
+                        let label = format!("{} ({})", w.name, range_str);
+                        let selected = phase_state.selected_weapon_idx == Some(i);
+                        if ui.selectable_label(selected, label).clicked() {
+                            // Despawn old shooter ring.
+                            if let Some(old_ring) = phase_state.shooter_range_ring.take() {
+                                commands.entity(old_ring).despawn_recursive();
+                            }
+                            phase_state.selected_weapon_idx = Some(i);
+                            phase_state.pending_target = None;
+
+                            // Spawn a blue range ring at weapon range from base edge.
+                            if let Some(range) = BD::weapon_range_inches(w) {
+                                let shooter_r = shooter_unit.base_shape.radius_x_inches()
+                                    .max(shooter_unit.base_shape.radius_y_inches());
+                                let ring_r = range + shooter_r;
+                                let pos = shooter_transform.translation.truncate();
+                                let ring_entity = commands
+                                    .spawn((
+                                        Mesh2d(meshes.add(Annulus::new(ring_r, ring_r + 0.12))),
+                                        MeshMaterial2d(materials.add(ColorMaterial::from_color(
+                                            Color::srgba(0.2, 0.4, 1.0, 0.85),
+                                        ))),
+                                        Transform::from_xyz(pos.x, pos.y, 0.5),
+                                        Visibility::Visible,
+                                        ShooterRangeRing,
+                                        PickingBehavior::IGNORE,
+                                    ))
+                                    .id();
+                                phase_state.shooter_range_ring = Some(ring_entity);
+                            }
+                        }
+                    }
+                }
+
+                // Pending target — show edge-to-edge distance.
+                if let Some(target_entity) = phase_state.pending_target {
+                    if let Ok((_, target_unit, target_transform)) = units.get(target_entity) {
+                        let shooter_r = shooter_unit.base_shape.radius_x_inches()
+                            .max(shooter_unit.base_shape.radius_y_inches());
+                        let target_r = target_unit.base_shape.radius_x_inches()
+                            .max(target_unit.base_shape.radius_y_inches());
+                        let center_dist = shooter_transform
+                            .translation
+                            .truncate()
+                            .distance(target_transform.translation.truncate());
+                        let edge_dist = (center_dist - shooter_r - target_r).max(0.0);
+                        ui.separator();
+                        ui.label(format!("Target: {} ({:.1}\" away)", target_unit.model_name, edge_dist));
+                        ui.horizontal(|ui| {
+                            if ui.button("Kill it").clicked() {
+                                phase_state.confirmed_kill = Some(target_entity);
+                                phase_state.pending_target = None;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                phase_state.pending_target = None;
+                            }
+                        });
+                    }
+                } else if phase_state.selected_weapon_idx.is_some() {
+                    ui.label("→ Click an enemy on the board");
+                }
+            } else {
+                ui.label("(weapon database not loaded)");
+            }
+
+            // Mark as performing action.
+            ui.add_space(4.0);
+            if ui.button("Mark performing action").clicked() {
+                if let Some(old_ring) = phase_state.shooter_range_ring.take() {
+                    commands.entity(old_ring).despawn_recursive();
+                }
+                phase_state.confirm_action = phase_state.selected_shooter;
+                phase_state.selected_shooter = None;
+                phase_state.selected_weapon_idx = None;
+                phase_state.pending_target = None;
+            }
+        }
+    }
+}
+
+fn draw_charge_phase_ui(
+    ui: &mut egui::Ui,
+    units: &Query<(Entity, &UnitBase, &Transform)>,
+    phase_state: &mut PhaseState,
+) {
+    ui.label("Select charger:");
+    egui::ScrollArea::vertical()
+        .id_salt("charge_units")
+        .max_height(100.0)
+        .show(ui, |ui| {
+            for (entity, unit, _) in units.iter() {
+                if unit.player != phase_state.active_player {
+                    continue;
+                }
+                if unit.is_killed || unit.has_advanced || unit.is_performing_action {
+                    continue;
+                }
+                let selected = phase_state.declared_charger == Some(entity);
+                if ui.selectable_label(selected, &unit.model_name).clicked() {
+                    phase_state.declared_charger = Some(entity);
+                    phase_state.declared_charge_target = None;
+                    phase_state.charge_declared = None;
+                }
+            }
+        });
+
+    if let Some(charger_entity) = phase_state.declared_charger {
+        if let Ok((_, charger_unit, charger_transform)) = units.get(charger_entity) {
+            ui.separator();
+            ui.label(format!("Charger: {}", charger_unit.model_name));
+
+            if let Some(target_entity) = phase_state.declared_charge_target {
+                if let Ok((_, target_unit, target_transform)) = units.get(target_entity) {
+                    let charger_r = charger_unit.base_shape.radius_x_inches()
+                        .max(charger_unit.base_shape.radius_y_inches());
+                    let target_r = target_unit.base_shape.radius_x_inches()
+                        .max(target_unit.base_shape.radius_y_inches());
+                    let center_dist = charger_transform
+                        .translation
+                        .truncate()
+                        .distance(target_transform.translation.truncate());
+                    let edge_dist = (center_dist - charger_r - target_r).max(0.0);
+                    let in_range = edge_dist <= 12.0;
+                    ui.label(format!(
+                        "Target: {} ({:.1}\" — {})",
+                        target_unit.model_name,
+                        edge_dist,
+                        if in_range { "in range" } else { "out of range" }
+                    ));
+                    ui.add_space(4.0);
+                    match phase_state.charge_declared {
+                        None => {
+                            ui.horizontal(|ui| {
+                                if ui.button("Declare Success").clicked() {
+                                    phase_state.charge_declared = Some(true);
+                                }
+                                if ui.button("Declare Failure").clicked() {
+                                    phase_state.charge_declared = Some(false);
+                                }
+                            });
+                        }
+                        Some(true) => {
+                            ui.label("✓ Charge SUCCESS — drag charger into position");
+                        }
+                        Some(false) => {
+                            ui.label("✗ Charge failed");
+                        }
+                    }
+                }
+            } else {
+                ui.label("→ Click an enemy on the board");
+            }
+        }
+    }
+}
+
+fn draw_fight_phase_ui(
+    ui: &mut egui::Ui,
+    units: &Query<(Entity, &UnitBase, &Transform)>,
+    phase_state: &mut PhaseState,
+) {
+    ui.label("Click any unit to mark them for killing.");
+
+    if let Some(target_entity) = phase_state.pending_kill_target {
+        if let Ok((_, target_unit, _)) = units.get(target_entity) {
+            ui.separator();
+            ui.label(format!("Kill: {}?", target_unit.model_name));
+            ui.horizontal(|ui| {
+                if ui.button("Confirm Kill").clicked() {
+                    phase_state.confirmed_kill = Some(target_entity);
+                    phase_state.pending_kill_target = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    phase_state.pending_kill_target = None;
+                }
+            });
+        } else {
+            phase_state.pending_kill_target = None;
+        }
+    } else {
+        // List all units still alive — both sides can be killed in Fight.
+        egui::ScrollArea::vertical()
+            .id_salt("fight_scroll")
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for (_, unit, _) in units.iter() {
+                    if unit.is_killed {
+                        ui.weak(format!("✗ {}", unit.model_name));
+                    } else {
+                        ui.label(&unit.model_name);
+                    }
+                }
+            });
+    }
+
+    // Summary of surviving units by side.
+    ui.separator();
+    ui.label(format!("{} units:", phase_state.active_player.label()));
+    for (_, unit, _) in units.iter() {
+        if unit.player == phase_state.active_player && !unit.is_killed {
+            ui.label(&unit.model_name);
+        }
+    }
 }
 
 fn draw_analysis_tab(

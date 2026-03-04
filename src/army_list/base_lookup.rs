@@ -1,3 +1,4 @@
+use bevy::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -20,6 +21,28 @@ pub struct DatasheetModelRecord {
     pub base_size: Option<String>,
 }
 
+/// A single weapon profile from Datasheets_wargear.json.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WeaponRecord {
+    pub datasheet_id: String,
+    pub name: String,
+    /// Range in inches as a string: "24", "12", "Melee", etc.
+    pub range: String,
+    #[serde(rename = "type")]
+    pub weapon_type: String,
+    #[serde(rename = "A")]
+    pub attacks: String,
+    #[serde(rename = "BS_WS")]
+    pub bs_ws: String,
+    #[serde(rename = "S")]
+    pub strength: String,
+    #[serde(rename = "AP")]
+    pub ap: String,
+    #[serde(rename = "D")]
+    pub damage: String,
+}
+
+#[derive(Resource)]
 pub struct BaseDatabase {
     /// Maps unit name (lowercase) → datasheet_id.
     name_to_id: HashMap<String, String>,
@@ -27,14 +50,18 @@ pub struct BaseDatabase {
     models: HashMap<(String, String), DatasheetModelRecord>,
     /// Maps datasheet_id → first model record (fallback).
     first_model: HashMap<String, DatasheetModelRecord>,
+    /// Maps datasheet_id → weapon profiles.
+    pub weapons: HashMap<String, Vec<WeaponRecord>>,
 }
 
 impl BaseDatabase {
-    pub fn load(datasheets_json: &str, models_json: &str) -> Self {
+    pub fn load(datasheets_json: &str, models_json: &str, wargear_json: &str) -> Self {
         let sheets: Vec<DatasheetRecord> =
             serde_json::from_str(datasheets_json).expect("Failed to parse Datasheets.json");
         let models: Vec<DatasheetModelRecord> =
             serde_json::from_str(models_json).expect("Failed to parse Datasheets_models.json");
+        let wargear: Vec<WeaponRecord> =
+            serde_json::from_str(wargear_json).expect("Failed to parse Datasheets_wargear.json");
 
         let name_to_id: HashMap<String, String> = sheets
             .iter()
@@ -52,11 +79,31 @@ impl BaseDatabase {
             model_map.insert(key, m);
         }
 
+        let mut weapons: HashMap<String, Vec<WeaponRecord>> = HashMap::new();
+        for w in wargear {
+            weapons.entry(w.datasheet_id.clone()).or_default().push(w);
+        }
+
         BaseDatabase {
             name_to_id,
             models: model_map,
             first_model,
+            weapons,
         }
+    }
+
+    /// Returns all weapon profiles for a unit looked up by name.
+    pub fn weapons_for_unit(&self, unit_name: &str) -> &[WeaponRecord] {
+        self.name_to_id
+            .get(&unit_name.to_lowercase())
+            .and_then(|id| self.weapons.get(id))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Parse a weapon's range string into inches, returning `None` for Melee or unparseable.
+    pub fn weapon_range_inches(weapon: &WeaponRecord) -> Option<f32> {
+        weapon.range.trim().parse::<f32>().ok()
     }
 
     /// Returns true if `model_name` is a real model variant for `unit_name` in the database.
@@ -211,6 +258,7 @@ mod tests {
         let base_db = BaseDatabase::load(
             include_str!("../../assets/Datasheets.json"),
             include_str!("../../assets/Datasheets_models.json"),
+            include_str!("../../assets/Datasheets_wargear.json"),
         );
         assert!(!base_db.has_model("Rotigus", "Gnarlrod"));
         assert!(!base_db.has_model("Skarbrand", "Bellow of endless fury"));

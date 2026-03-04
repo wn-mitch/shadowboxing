@@ -8,6 +8,7 @@ mod types;
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 
+use army_list::base_lookup::BaseDatabase;
 use events::{
     AnalysisComplete, DeleteUnit, LoadDeploymentPattern, LoadTerrainLayout, SpawnUnit,
     TriggerAnalysis, TriggerArmyListImport,
@@ -21,7 +22,7 @@ use plugins::{
     units::UnitsPlugin,
     visibility::VisibilityPlugin,
 };
-use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, RightPanelWidth, TerrainLayouts};
+use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, PhaseState, RightPanelWidth, TerrainLayouts};
 use types::{
     deployment::DeploymentPatternList,
     terrain::TerrainLayout,
@@ -46,6 +47,7 @@ fn main() {
         .init_resource::<VisibilityState>()
         .init_resource::<OverlaySettings>()
         .init_resource::<RightPanelWidth>()
+        .init_resource::<PhaseState>()
         // Events.
         .add_event::<LoadTerrainLayout>()
         .add_event::<LoadDeploymentPattern>()
@@ -75,6 +77,13 @@ fn load_static_data(
     mut ev_load_layout: EventWriter<LoadTerrainLayout>,
     mut ev_load_pattern: EventWriter<LoadDeploymentPattern>,
 ) {
+    // Base + weapon database.
+    let base_db = BaseDatabase::load(
+        include_str!("../assets/Datasheets.json"),
+        include_str!("../assets/Datasheets_models.json"),
+        include_str!("../assets/Datasheets_wargear.json"),
+    );
+    commands.insert_resource(base_db);
     // Terrain layouts.
     let layout_gw: TerrainLayout = serde_json::from_str(include_str!(
         "../assets/terrain-layouts/gw/layout-1.json"

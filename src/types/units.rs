@@ -96,6 +96,14 @@ pub struct UnitBase {
     pub color: Color,
     /// Last valid world position (used for snap-back on invalid placement).
     pub last_valid_pos: Vec2,
+    /// True if the unit Advanced this Movement phase (moved > M inches).
+    pub has_advanced: bool,
+    /// True if the unit used a Stratagem or declared a non-move action this phase.
+    pub is_performing_action: bool,
+    /// True if the unit has been killed (faded, pending despawn).
+    pub is_killed: bool,
+    /// True if the unit was killed during the current phase (shooting or fight).
+    pub killed_this_phase: bool,
 }
 
 /// A spawned army unit ready to be placed on the board.

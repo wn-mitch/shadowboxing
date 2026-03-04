@@ -78,3 +78,11 @@ pub struct MovementRangeRing;
 /// Marker for the "ADV" text badge child on a unit base.
 #[derive(Component)]
 pub struct AdvanceIndicator;
+
+/// Standalone ring entity showing the 12" charge range for a selected charger.
+#[derive(Component)]
+pub struct ChargeRangeRing;
+
+/// Standalone ring entity showing the selected weapon's range from the shooter's base edge.
+#[derive(Component)]
+pub struct ShooterRangeRing;

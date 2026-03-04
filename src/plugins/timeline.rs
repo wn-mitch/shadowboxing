@@ -2,11 +2,14 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::events::{LockDeployment, RecordSnapshot, RewindToSnapshot, UnitMoved};
+use crate::events::{AdvancePhase, LockDeployment, RecordSnapshot, RewindToSnapshot, UnitMoved};
+use crate::resources::PhaseState;
+use crate::types::phase::GamePhase;
 use crate::types::timeline::{
-    AdvanceIndicator, GameTimeline, GhostUnit, MovementArrow, MovementRangeRing, TimelineSnapshot,
+    AdvanceIndicator, FirstPlayer, GameTimeline, GhostUnit, MovementArrow, MovementRangeRing,
+    TimelineSnapshot,
 };
-use crate::types::units::UnitBase;
+use crate::types::units::{Player, UnitBase};
 use crate::types::visibility::VisibilityState;
 
 pub struct TimelinePlugin;
@@ -18,6 +21,7 @@ impl Plugin for TimelinePlugin {
             .add_event::<RecordSnapshot>()
             .add_event::<RewindToSnapshot>()
             .add_event::<UnitMoved>()
+            .add_event::<AdvancePhase>()
             .add_systems(
                 Update,
                 (
@@ -25,6 +29,7 @@ impl Plugin for TimelinePlugin {
                     on_unit_moved,
                     on_record_snapshot,
                     on_rewind_to_snapshot,
+                    on_advance_phase,
                     update_advance_indicators,
                     cleanup_despawned_unit_arrows,
                     sync_ghost_positions,
@@ -41,6 +46,7 @@ impl Plugin for TimelinePlugin {
 fn on_lock_deployment(
     mut events: EventReader<LockDeployment>,
     mut timeline: ResMut<GameTimeline>,
+    mut phase_state: ResMut<PhaseState>,
     units: Query<(Entity, &Transform, &UnitBase)>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -51,6 +57,11 @@ fn on_lock_deployment(
             continue;
         }
         timeline.locked = true;
+
+        phase_state.active_player = match timeline.first_player {
+            FirstPlayer::Attacker => Player::Attacker,
+            FirstPlayer::Defender => Player::Defender,
+        };
 
         // Snapshot deployment positions with no advances.
         let positions: HashMap<Entity, (Vec2, bool)> = units
@@ -440,6 +451,126 @@ fn sync_active_analysis_player(
     };
     if vis_state.active_analysis_player != player {
         vis_state.active_analysis_player = player;
+    }
+}
+
+// ── Phase advancement ─────────────────────────────────────────────────────────
+
+fn on_advance_phase(
+    mut events: EventReader<AdvancePhase>,
+    mut phase_state: ResMut<PhaseState>,
+    mut timeline: ResMut<GameTimeline>,
+    mut units: Query<(Entity, &mut UnitBase)>,
+    mut commands: Commands,
+    mut ev_record: EventWriter<RecordSnapshot>,
+) {
+    for _ in events.read() {
+        if !timeline.locked {
+            continue;
+        }
+
+        let current = phase_state.phase;
+        let next = current.next();
+
+        match current {
+            GamePhase::Movement => {
+                let turn = phase_state.turn_number.max(1);
+                let player_str = phase_state.active_player.label();
+                ev_record.send(RecordSnapshot {
+                    label: format!("Turn {} — {} Move", turn, player_str),
+                });
+            }
+            GamePhase::Shooting => {
+                // Despawn units killed during shooting.
+                for (entity, unit) in &units {
+                    if unit.is_killed && unit.killed_this_phase {
+                        if let Some(arrow) = timeline.live_arrows.remove(&entity) {
+                            commands.entity(arrow).despawn_recursive();
+                        }
+                        if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
+                            commands.entity(ghost).despawn_recursive();
+                        }
+                        if let Some(rings) = timeline.ring_entities.remove(&entity) {
+                            for ring in rings {
+                                commands.entity(ring).despawn_recursive();
+                            }
+                        }
+                        timeline.phase_start_positions.remove(&entity);
+                        timeline.live_unit_positions.remove(&entity);
+                        commands.entity(entity).despawn_recursive();
+                    }
+                }
+            }
+            GamePhase::Fight => {
+                // Despawn all killed units.
+                for (entity, unit) in &units {
+                    if unit.is_killed {
+                        if let Some(arrow) = timeline.live_arrows.remove(&entity) {
+                            commands.entity(arrow).despawn_recursive();
+                        }
+                        if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
+                            commands.entity(ghost).despawn_recursive();
+                        }
+                        if let Some(rings) = timeline.ring_entities.remove(&entity) {
+                            for ring in rings {
+                                commands.entity(ring).despawn_recursive();
+                            }
+                        }
+                        timeline.phase_start_positions.remove(&entity);
+                        timeline.live_unit_positions.remove(&entity);
+                        commands.entity(entity).despawn_recursive();
+                    }
+                }
+
+                // Reset phase flags on surviving units.
+                for (_, mut unit) in &mut units {
+                    if !unit.is_killed {
+                        unit.has_advanced = false;
+                        unit.is_performing_action = false;
+                        unit.killed_this_phase = false;
+                    }
+                }
+
+                // Record end-of-turn snapshot.
+                let turn = phase_state.turn_number.max(1);
+                let player_str = phase_state.active_player.label();
+                ev_record.send(RecordSnapshot {
+                    label: format!("Turn {} — {} Fight", turn, player_str),
+                });
+
+                // Increment turn and swap active player after Fight.
+                phase_state.turn_number += 1;
+                phase_state.active_player = phase_state.active_player.other();
+            }
+            _ => {}
+        }
+
+        // Despawn transient rings.
+        if let Some(ring) = phase_state.charge_ring_entity.take() {
+            commands.entity(ring).despawn_recursive();
+        }
+        if let Some(ring) = phase_state.shooter_range_ring.take() {
+            commands.entity(ring).despawn_recursive();
+        }
+
+        // Clear all per-phase selection state.
+        phase_state.selected_shooter = None;
+        phase_state.selected_weapon_idx = None;
+        phase_state.pending_target = None;
+        phase_state.declared_charger = None;
+        phase_state.declared_charge_target = None;
+        phase_state.charge_declared = None;
+        phase_state.pending_kill_target = None;
+
+        // Reset killed_this_phase for all units at phase boundary.
+        for (_, mut unit) in &mut units {
+            unit.killed_this_phase = false;
+        }
+
+        phase_state.phase = match next {
+            Some(p) => p,
+            None => GamePhase::Command,
+        };
     }
 }
 
