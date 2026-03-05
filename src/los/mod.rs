@@ -4,6 +4,7 @@ pub mod vis_poly;
 
 use bevy::math::Vec2;
 use geo::{Area, Simplify};
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -30,9 +31,13 @@ pub fn run_analysis(
     sources: Vec<Vec2>,
     pieces: &[TerrainPiece],
 ) -> (geo::MultiPolygon<f64>, Vec<(Vec2, Vec<Vec2>)>) {
-    // Per-source: parallel rayon computation.
-    let per_source: Vec<(Vec2, Vec<Vec2>)> = sources
-        .par_iter()
+    // Per-source: parallel on native (rayon), sequential on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
+    let iter = sources.par_iter();
+    #[cfg(target_arch = "wasm32")]
+    let iter = sources.iter();
+
+    let per_source: Vec<(Vec2, Vec<Vec2>)> = iter
         .map(|&src| {
             let src = clamp_to_board_interior(src);
             let occupancy = get_terrain_occupancy(src, pieces);

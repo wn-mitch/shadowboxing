@@ -19,3 +19,6 @@ assets/**/*.meta
 *.dylib
 *.so
 *.dll
+
+# Trunk WASM build output
+/dist/
