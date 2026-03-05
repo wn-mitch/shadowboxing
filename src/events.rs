@@ -2,6 +2,7 @@ use bevy::math::Vec2;
 use bevy::prelude::*;
 use geo::MultiPolygon;
 
+use crate::types::timeline::MoveType;
 use crate::types::units::{BaseShape, Player};
 use crate::types::visibility::AnalysisMode;
 
@@ -82,8 +83,17 @@ pub struct UnitMoved {
     pub entity: Entity,
     pub from: Vec2,
     pub to: Vec2,
+    pub move_type: MoveType,
 }
 
 /// Advance to the next game phase (or end the turn after Fight).
 #[derive(Event, Debug, Clone)]
 pub struct AdvancePhase;
+
+/// UI signal: confirm a kill on the target entity.
+#[derive(Event, Debug, Clone)]
+pub struct ConfirmKill(pub Entity);
+
+/// UI signal: mark a unit as performing an action.
+#[derive(Event, Debug, Clone)]
+pub struct ConfirmAction(pub Entity);

@@ -28,8 +28,10 @@ pub struct GameTimeline {
     pub snapshots: Vec<TimelineSnapshot>,
     /// `snapshots.len()` means "live view".
     pub current_index: usize,
-    /// unit entity → live arrow entity for the current phase.
-    pub live_arrows: HashMap<Entity, Entity>,
+    /// unit entity → live arrow entities for the current phase (multi-segment).
+    pub live_arrows: HashMap<Entity, Vec<Entity>>,
+    /// unit entity → cumulative path distance across all live segments.
+    pub live_cumulative_distance: HashMap<Entity, f32>,
     /// Tail of live arrows — positions at phase start.
     pub phase_start_positions: HashMap<Entity, Vec2>,
     /// Current live positions (used to restore after leaving historical view).
@@ -57,12 +59,56 @@ impl GameTimeline {
     }
 }
 
+/// Type of movement — determines arrow color and behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MoveType {
+    #[default]
+    Normal,
+    Advance,
+    FallBack,
+    Reactive,
+    PileIn,
+    Consolidate,
+    Charge,
+}
+
+impl MoveType {
+    pub fn color(self) -> Color {
+        match self {
+            Self::Normal => Color::srgba(0.2, 0.9, 0.2, 0.75),       // green
+            Self::Advance => Color::srgba(1.0, 0.6, 0.0, 0.75),      // orange
+            Self::FallBack => Color::srgba(0.9, 0.2, 0.2, 0.75),     // red
+            Self::Reactive => Color::srgba(1.0, 1.0, 0.2, 0.75),     // yellow
+            Self::PileIn => Color::srgba(0.6, 0.2, 0.9, 0.75),       // purple
+            Self::Consolidate => Color::srgba(0.2, 0.9, 0.9, 0.75),  // cyan
+            Self::Charge => Color::srgba(1.0, 0.5, 0.0, 0.75),       // orange
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Move",
+            Self::Advance => "Advance",
+            Self::FallBack => "Fall Back",
+            Self::Reactive => "Reactive",
+            Self::PileIn => "Pile In",
+            Self::Consolidate => "Consolidate",
+            Self::Charge => "Charge",
+        }
+    }
+
+    pub fn is_dashed(self) -> bool {
+        matches!(self, Self::Charge)
+    }
+}
+
 /// Root entity for a movement arrow drawn from `from` to `to`.
 #[derive(Component)]
 pub struct MovementArrow {
     pub unit: Entity,
     pub from: Vec2,
     pub to: Vec2,
+    pub move_type: MoveType,
 }
 
 /// Semi-transparent ghost that marks a unit's phase-start position.
@@ -86,3 +132,23 @@ pub struct ChargeRangeRing;
 /// Standalone ring entity showing the selected weapon's range from the shooter's base edge.
 #[derive(Component)]
 pub struct ShooterRangeRing;
+
+/// Persistent range ring that follows a unit.
+#[derive(Component)]
+pub struct PersistentRangeRing {
+    pub unit: Entity,
+    pub radius: f32,
+}
+
+/// Annotation line from shooter to target.
+#[derive(Component)]
+pub struct ShootAnnotation {
+    pub shooter: Entity,
+    pub target: Entity,
+    pub weapon_name: String,
+    pub distance: f32,
+}
+
+/// Marker for ephemeral measure tool entities.
+#[derive(Component)]
+pub struct MeasureMarker;

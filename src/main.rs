@@ -22,9 +22,15 @@ use plugins::{
     units::UnitsPlugin,
     visibility::VisibilityPlugin,
 };
-use resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, PhaseState, RightPanelWidth, TerrainLayouts};
+use resources::{
+    ActiveLayout, ActivePattern, BattleshockToolState, BoardConfig, ChargeToolState,
+    DeployReservesToolState, DeploymentPatterns, EnforceMaxMove, EnterReservesToolState,
+    KillToolState, MeasureToolState, OverlaySettings, PhaseState, RangeRingToolState,
+    RightPanelWidth, ShootToolState, TerrainLayouts,
+};
 use types::{
     deployment::DeploymentPatternList,
+    phase::ActiveTool,
     terrain::TerrainLayout,
     visibility::VisibilityState,
 };
@@ -40,6 +46,8 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin)
+        // Tool state.
+        .init_state::<ActiveTool>()
         // Resources.
         .init_resource::<BoardConfig>()
         .init_resource::<ActiveLayout>()
@@ -48,6 +56,16 @@ fn main() {
         .init_resource::<OverlaySettings>()
         .init_resource::<RightPanelWidth>()
         .init_resource::<PhaseState>()
+        // Per-tool resources.
+        .init_resource::<KillToolState>()
+        .init_resource::<ShootToolState>()
+        .init_resource::<ChargeToolState>()
+        .init_resource::<MeasureToolState>()
+        .init_resource::<RangeRingToolState>()
+        .init_resource::<BattleshockToolState>()
+        .init_resource::<EnterReservesToolState>()
+        .init_resource::<DeployReservesToolState>()
+        .init_resource::<EnforceMaxMove>()
         // Events.
         .add_event::<LoadTerrainLayout>()
         .add_event::<LoadDeploymentPattern>()

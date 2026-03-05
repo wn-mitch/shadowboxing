@@ -98,12 +98,26 @@ pub struct UnitBase {
     pub last_valid_pos: Vec2,
     /// True if the unit Advanced this Movement phase (moved > M inches).
     pub has_advanced: bool,
+    /// True if the unit fell back this Movement phase.
+    pub has_fallen_back: bool,
     /// True if the unit used a Stratagem or declared a non-move action this phase.
     pub is_performing_action: bool,
+    /// True if the unit is battleshocked (Command phase).
+    pub is_battleshocked: bool,
     /// True if the unit has been killed (faded, pending despawn).
     pub is_killed: bool,
     /// True if the unit was killed during the current phase (shooting or fight).
     pub killed_this_phase: bool,
+}
+
+/// Marker: this unit is off-board in reserves.
+#[derive(Component)]
+pub struct InReserves;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReserveType {
+    Strategic,
+    DeepStrike,
 }
 
 /// A spawned army unit ready to be placed on the board.

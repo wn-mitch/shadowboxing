@@ -50,7 +50,7 @@ impl Default for RightPanelWidth {
     }
 }
 
-/// Tracks which game phase is active and per-phase selection state.
+/// Tracks game phase sequencing — no per-tool selection state.
 #[derive(Resource)]
 pub struct PhaseState {
     pub phase: GamePhase,
@@ -58,30 +58,6 @@ pub struct PhaseState {
     pub turn_number: u32,
     /// Which player's turn is currently active (set on lock, toggled at end of Fight).
     pub active_player: Player,
-
-    // Shooting
-    pub selected_shooter: Option<Entity>,
-    pub selected_weapon_idx: Option<usize>,
-    /// Enemy clicked, awaiting kill/cancel confirmation.
-    pub pending_target: Option<Entity>,
-    /// Standalone range ring showing the selected weapon's reach from the shooter's base edge.
-    pub shooter_range_ring: Option<Entity>,
-
-    // Charge
-    pub declared_charger: Option<Entity>,
-    pub declared_charge_target: Option<Entity>,
-    /// `Some(true)` = success declared, `Some(false)` = failure declared.
-    pub charge_declared: Option<bool>,
-    /// Standalone charge range ring entity spawned when charger is selected.
-    pub charge_ring_entity: Option<Entity>,
-
-    // Fight
-    pub pending_kill_target: Option<Entity>,
-
-    /// Set by UI "Kill it" / "Confirm Kill" buttons; processed next frame by confirm_kills system.
-    pub confirmed_kill: Option<Entity>,
-    /// Set by UI "Mark performing action" button.
-    pub confirm_action: Option<Entity>,
 }
 
 impl Default for PhaseState {
@@ -90,20 +66,61 @@ impl Default for PhaseState {
             phase: GamePhase::default(),
             turn_number: 0,
             active_player: Player::Attacker,
-            selected_shooter: None,
-            selected_weapon_idx: None,
-            pending_target: None,
-            shooter_range_ring: None,
-            declared_charger: None,
-            declared_charge_target: None,
-            charge_declared: None,
-            charge_ring_entity: None,
-            pending_kill_target: None,
-            confirmed_kill: None,
-            confirm_action: None,
         }
     }
 }
+
+// ── Per-tool state resources ─────────────────────────────────────────────────
+
+#[derive(Resource, Default)]
+pub struct KillToolState {
+    pub pending_target: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+pub struct ShootToolState {
+    pub selected_shooter: Option<Entity>,
+    pub selected_weapon_idx: Option<usize>,
+    pub pending_target: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+pub struct ChargeToolState {
+    pub declared_charger: Option<Entity>,
+    pub charge_targets: Vec<Entity>,
+    pub charge_declared: Option<bool>,
+}
+
+#[derive(Resource, Default)]
+pub struct MeasureToolState {
+    pub start_point: Option<Vec2>,
+}
+
+#[derive(Resource, Default)]
+pub struct RangeRingToolState {
+    pub radius_input: String,
+    pub selected_unit: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+pub struct BattleshockToolState {
+    pub pending_target: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+pub struct EnterReservesToolState {
+    pub pending: Option<Entity>,
+}
+
+#[derive(Resource, Default)]
+pub struct DeployReservesToolState {
+    pub selected_reserve: Option<Entity>,
+}
+
+/// When true, movement tools enforce the unit's M (or M+6 for Advance) as a
+/// cumulative path-distance cap.
+#[derive(Resource, Default)]
+pub struct EnforceMaxMove(pub bool);
 
 #[derive(Resource)]
 pub struct OverlaySettings {

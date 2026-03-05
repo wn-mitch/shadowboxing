@@ -1,11 +1,19 @@
 use bevy::prelude::*;
 
 use crate::army_list::base_lookup::BaseDatabase;
-use crate::events::{ClearPlayerUnits, RemoveModelUnits, SpawnUnit, UnitMoved};
-use crate::resources::{ActiveLayout, ActivePattern, BoardConfig, DeploymentPatterns, OverlaySettings, PhaseState, TerrainLayouts};
-use crate::types::phase::GamePhase;
+use crate::events::{
+    ClearPlayerUnits, ConfirmAction, ConfirmKill, RemoveModelUnits, SpawnUnit, UnitMoved,
+};
+use crate::resources::{
+    ActiveLayout, ActivePattern, BoardConfig, BattleshockToolState, ChargeToolState,
+    DeploymentPatterns, EnforceMaxMove, KillToolState, OverlaySettings, PhaseState,
+    RangeRingToolState, ShootToolState, TerrainLayouts,
+};
+use crate::types::phase::ActiveTool;
 use crate::types::terrain::TerrainPiece;
-use crate::types::timeline::{AdvanceIndicator, ChargeRangeRing, GameTimeline, MovementRangeRing};
+use crate::types::timeline::{
+    AdvanceIndicator, ChargeRangeRing, GameTimeline, MoveType, MovementRangeRing, ShooterRangeRing,
+};
 use crate::types::units::{BaseShape, Player, UnitBase};
 use crate::types::visibility::{AnalysisMode, SelectedUnitForAnalysis, VisibilityState};
 use crate::los::shapes::point_in_shape;
@@ -19,25 +27,107 @@ impl Plugin for UnitsPlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<ClearPlayerUnits>()
             .add_event::<RemoveModelUnits>()
+            .add_event::<ConfirmKill>()
+            .add_event::<ConfirmAction>()
             .add_systems(
                 Update,
                 (
                     on_spawn_unit,
-                    handle_drag,
                     update_validity_indicators,
                     sync_validity_rings,
                     on_clear_player_units,
                     on_remove_model_units,
-                    handle_unit_click,
+                    // Shared systems — always run
                     confirm_kills,
                     confirm_action_flag,
                     sync_unit_tint,
                     sync_killed_unit_tint,
-                    sync_charge_ring_position,
                 ),
-            );
+            )
+            // Drag — during deployment (unlocked) or when a movement tool is active
+            .add_systems(
+                Update,
+                handle_drag.run_if(
+                    |tool: Res<State<ActiveTool>>, timeline: Res<GameTimeline>| {
+                        !timeline.locked || tool.get().is_movement_tool()
+                    },
+                ),
+            )
+            // Per-tool click handlers
+            .add_systems(
+                Update,
+                handle_select_click.run_if(in_state(ActiveTool::Select)),
+            )
+            .add_systems(
+                Update,
+                handle_kill_click.run_if(in_state(ActiveTool::Kill)),
+            )
+            .add_systems(
+                Update,
+                handle_shoot_click.run_if(in_state(ActiveTool::ShootAnnotate)),
+            )
+            .add_systems(
+                Update,
+                (handle_charge_click, sync_charge_ring_position)
+                    .run_if(in_state(ActiveTool::Charge)),
+            )
+            .add_systems(
+                Update,
+                handle_battleshock_click.run_if(in_state(ActiveTool::Battleshock)),
+            )
+            .add_systems(
+                Update,
+                handle_rangering_click.run_if(in_state(ActiveTool::RangeRing)),
+            )
+            // Analysis mode click — runs pre-lock regardless of tool
+            .add_systems(Update, handle_analysis_click)
+            // OnExit cleanup
+            .add_systems(OnExit(ActiveTool::Kill), cleanup_kill_tool)
+            .add_systems(OnExit(ActiveTool::ShootAnnotate), cleanup_shoot_tool)
+            .add_systems(OnExit(ActiveTool::Charge), cleanup_charge_tool)
+            .add_systems(OnExit(ActiveTool::Battleshock), cleanup_battleshock_tool)
+            .add_systems(OnExit(ActiveTool::RangeRing), cleanup_rangering_tool);
     }
 }
+
+// ── Cleanup systems ──────────────────────────────────────────────────────────
+
+fn cleanup_kill_tool(mut state: ResMut<KillToolState>) {
+    *state = default();
+}
+
+fn cleanup_shoot_tool(
+    mut commands: Commands,
+    mut state: ResMut<ShootToolState>,
+    rings: Query<Entity, With<ShooterRangeRing>>,
+) {
+    *state = default();
+    for ring in &rings {
+        commands.entity(ring).despawn_recursive();
+    }
+}
+
+fn cleanup_charge_tool(
+    mut commands: Commands,
+    mut state: ResMut<ChargeToolState>,
+    rings: Query<Entity, With<ChargeRangeRing>>,
+) {
+    *state = default();
+    for ring in &rings {
+        commands.entity(ring).despawn_recursive();
+    }
+}
+
+fn cleanup_battleshock_tool(mut state: ResMut<BattleshockToolState>) {
+    *state = default();
+}
+
+fn cleanup_rangering_tool(mut state: ResMut<RangeRingToolState>) {
+    // Keep rings alive — just clear selection.
+    state.selected_unit = None;
+}
+
+// ── Validity ─────────────────────────────────────────────────────────────────
 
 fn sync_validity_rings(
     mut q: Query<&mut Visibility, With<ZoneRingMarker>>,
@@ -56,6 +146,8 @@ fn vis(b: bool) -> Visibility {
     if b { Visibility::Visible } else { Visibility::Hidden }
 }
 
+// ── Spawning ─────────────────────────────────────────────────────────────────
+
 fn on_spawn_unit(
     mut commands: Commands,
     mut events: EventReader<SpawnUnit>,
@@ -68,7 +160,6 @@ fn on_spawn_unit(
     active_layout: Res<ActiveLayout>,
 ) {
     for ev in events.read() {
-        // Find the deployment zone for this player.
         let zone_verts = active_pattern
             .0
             .as_ref()
@@ -118,7 +209,6 @@ fn find_valid_spawn_pos(
     let rx = base.radius_x_inches();
     let ry = base.radius_y_inches();
 
-    // Search in deployment zone at 1" spacing, or fall back to board center area.
     let search_verts: Vec<Vec2>;
     let use_verts: &[Vec2] = if let Some(z) = zone_verts {
         z
@@ -134,7 +224,6 @@ fn find_valid_spawn_pos(
 
     let (min_x, min_y, max_x, max_y) = bounding_box(use_verts);
 
-    // Scan left-to-right, top-to-bottom at 1" spacing.
     let mut y = min_y + ry;
     let mut candidate_idx: u32 = 0;
     while y <= max_y - ry {
@@ -158,7 +247,6 @@ fn find_valid_spawn_pos(
         y += 1.0;
     }
 
-    // Fallback: board center.
     Vec2::new(board.width / 2.0, board.height / 2.0)
 }
 
@@ -210,7 +298,7 @@ fn overlaps_any_terrain(pos: Vec2, base: &BaseShape, pieces: &[TerrainPiece]) ->
         }
         for shape in &piece.shapes {
             if !matches!(shape, TerrainShape::Line { .. }) {
-                continue; // footprints are passable; only walls block placement
+                continue;
             }
             for &pt in &check_pts {
                 if point_in_shape(pt, shape, piece) {
@@ -226,58 +314,6 @@ fn bases_overlap(pos_a: Vec2, base_a: &BaseShape, pos_b: Vec2, base_b: &BaseShap
     let ra = base_a.radius_x_inches().max(base_a.radius_y_inches());
     let rb = base_b.radius_x_inches().max(base_b.radius_y_inches());
     pos_a.distance(pos_b) < ra + rb
-}
-
-fn grey_tint(color: Color) -> Color {
-    let s = color.to_srgba();
-    let t = 0.5_f32;
-    Color::srgb(
-        s.red * (1.0 - t) + 0.5 * t,
-        s.green * (1.0 - t) + 0.5 * t,
-        s.blue * (1.0 - t) + 0.5 * t,
-    )
-}
-
-fn sync_unit_tint(
-    timeline: Res<GameTimeline>,
-    phase_state: Res<PhaseState>,
-    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>)>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    for (unit_base, mat_handle) in &units {
-        let target = if timeline.locked {
-            if unit_base.player == phase_state.active_player {
-                unit_base.color
-            } else {
-                grey_tint(unit_base.color)
-            }
-        } else {
-            unit_base.color
-        };
-
-        // Only write when the color actually needs to change.
-        let needs_update = materials.get(mat_handle.id()).map(|m| m.color != target).unwrap_or(false);
-        if needs_update {
-            if let Some(mat) = materials.get_mut(mat_handle.id()) {
-                mat.color = target;
-            }
-        }
-    }
-}
-
-/// Sets killed units to 30% opacity so they fade without disappearing immediately.
-fn sync_killed_unit_tint(
-    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>), Changed<UnitBase>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    for (unit_base, mat_handle) in &units {
-        if unit_base.is_killed {
-            if let Some(mat) = materials.get_mut(mat_handle.id()) {
-                let s = unit_base.color.to_srgba();
-                mat.color = Color::srgba(s.red, s.green, s.blue, 0.3);
-            }
-        }
-    }
 }
 
 fn bounding_box(verts: &[Vec2]) -> (f32, f32, f32, f32) {
@@ -333,21 +369,23 @@ fn spawn_base(
                 color,
                 last_valid_pos: pos,
                 has_advanced: false,
+                has_fallen_back: false,
                 is_performing_action: false,
+                is_battleshocked: false,
                 is_killed: false,
                 killed_this_phase: false,
             },
             PickingBehavior::default(),
         ))
         .with_children(|parent| {
-            // White outline ring — always visible just outside the model edge.
+            // White outline ring.
             parent.spawn((
                 Mesh2d(meshes.add(Annulus::new(ring_inner, ring_inner + 0.12))),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(Color::WHITE))),
                 Transform::from_xyz(0.0, 0.0, 0.05),
             ));
 
-            // Zone violation ring (hidden by default; z=0.15 covers the white ring when shown).
+            // Zone violation ring (hidden by default).
             parent.spawn((
                 Mesh2d(meshes.add(ring)),
                 MeshMaterial2d(materials.add(ColorMaterial::from_color(
@@ -366,8 +404,7 @@ fn spawn_base(
                 Transform::from_xyz(0.0, 0.0, 0.2).with_scale(Vec3::splat(0.08)),
             ));
 
-            // "ADV" badge — appears when the unit has advanced.
-            // Range rings are spawned as standalone entities by TimelinePlugin on lock.
+            // "ADV" badge.
             if movement_inches.is_some() {
                 parent.spawn((
                     Text2d::new("ADV"),
@@ -451,27 +488,23 @@ fn on_remove_model_units(
     }
 }
 
-fn handle_unit_click(
+// ── Per-tool click handlers ──────────────────────────────────────────────────
+
+/// Select tool: show range rings (Movement), display unit info.
+fn handle_select_click(
     mut click_events: EventReader<Pointer<Click>>,
-    bases: Query<(Entity, &UnitBase, &Transform)>,
-    vis_state: Res<VisibilityState>,
-    mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+    bases: Query<(Entity, &UnitBase)>,
     timeline: Res<GameTimeline>,
-    mut phase_state: ResMut<PhaseState>,
+    phase_state: Res<PhaseState>,
     mut ring_query: Query<&mut Visibility, With<MovementRangeRing>>,
-    base_db: Option<Res<BaseDatabase>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for ev in click_events.read() {
-        let Ok((clicked_entity, clicked_unit, clicked_transform)) = bases.get(ev.target) else {
+        let Ok((clicked_entity, _clicked_unit)) = bases.get(ev.target) else {
             continue;
         };
 
-        // When deployment is locked, show the clicked unit's standalone range rings
-        // (only in Movement phase where range rings are meaningful).
-        if timeline.locked && phase_state.phase == GamePhase::Movement {
+        if timeline.locked {
+            // Show range rings for clicked unit.
             let to_show = timeline.ring_entities.get(&clicked_entity).copied();
             for mut vis in &mut ring_query {
                 *vis = Visibility::Hidden;
@@ -485,172 +518,334 @@ fn handle_unit_click(
                 }
             }
         }
+    }
+}
 
-        // Analysis mode selection (unchanged).
-        if vis_state.mode == AnalysisMode::UnitPositions && !timeline.locked {
-            selected_unit.0 = match selected_unit.0 {
-                Some(e) if e == clicked_entity => None,
-                _ => Some(clicked_entity),
-            };
-        }
-
-        if !timeline.locked {
+/// Analysis mode selection — runs pre-lock regardless of tool.
+fn handle_analysis_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<Entity, With<UnitBase>>,
+    vis_state: Res<VisibilityState>,
+    mut selected_unit: ResMut<SelectedUnitForAnalysis>,
+    timeline: Res<GameTimeline>,
+) {
+    if timeline.locked || vis_state.mode != AnalysisMode::UnitPositions {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok(clicked_entity) = bases.get(ev.target) else {
             continue;
+        };
+        selected_unit.0 = match selected_unit.0 {
+            Some(e) if e == clicked_entity => None,
+            _ => Some(clicked_entity),
+        };
+    }
+}
+
+/// Kill tool: click any non-killed unit to set as pending target.
+fn handle_kill_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<(Entity, &UnitBase)>,
+    mut kill_state: ResMut<KillToolState>,
+    timeline: Res<GameTimeline>,
+) {
+    if !timeline.locked {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok((clicked_entity, clicked_unit)) = bases.get(ev.target) else {
+            continue;
+        };
+        if !clicked_unit.is_killed {
+            kill_state.pending_target = Some(clicked_entity);
         }
+    }
+}
 
-        let active_player = phase_state.active_player;
+/// ShootAnnotate tool: friendly → shooter, enemy → target.
+fn handle_shoot_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<(Entity, &UnitBase, &Transform)>,
+    mut shoot_state: ResMut<ShootToolState>,
+    phase_state: Res<PhaseState>,
+    timeline: Res<GameTimeline>,
+    base_db: Option<Res<BaseDatabase>>,
+    mut commands: Commands,
+    rings: Query<Entity, With<ShooterRangeRing>>,
+) {
+    if !timeline.locked {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok((clicked_entity, clicked_unit, clicked_transform)) = bases.get(ev.target) else {
+            continue;
+        };
+        let is_friendly = clicked_unit.player == phase_state.active_player;
+        let is_enemy = clicked_unit.player != phase_state.active_player;
 
-        match phase_state.phase {
-            GamePhase::Shooting => {
-                let is_friendly = clicked_unit.player == active_player;
-                let is_enemy = clicked_unit.player != active_player;
-
-                if is_friendly && !clicked_unit.is_killed {
-                    // Changing shooter clears the weapon ring.
-                    if let Some(old_ring) = phase_state.shooter_range_ring.take() {
-                        commands.entity(old_ring).despawn_recursive();
-                    }
-                    phase_state.selected_shooter = Some(clicked_entity);
-                    phase_state.selected_weapon_idx = None;
-                    phase_state.pending_target = None;
-                } else if is_enemy && !clicked_unit.is_killed {
-                    // Set as pending target (confirmed via UI button).
-                    if phase_state.selected_shooter.is_some() && phase_state.selected_weapon_idx.is_some() {
-                        let in_range = if let Some(db) = base_db.as_ref() {
-                            if let Some(shooter_entity) = phase_state.selected_shooter {
-                                if let Ok((_, shooter_unit, shooter_transform)) = bases.get(shooter_entity) {
-                                    if let Some(wi) = phase_state.selected_weapon_idx {
-                                        let weapons: Vec<_> = db.weapons_for_unit(&shooter_unit.unit_name)
-                                            .iter()
-                                            .filter(|w| w.range.trim() != "Melee")
-                                            .collect();
-                                        if let Some(weapon) = weapons.get(wi) {
-                                            if let Some(range) = BaseDatabase::weapon_range_inches(weapon) {
-                                                let shooter_r = shooter_unit.base_shape.radius_x_inches()
-                                                    .max(shooter_unit.base_shape.radius_y_inches());
-                                                let target_r = clicked_unit.base_shape.radius_x_inches()
-                                                    .max(clicked_unit.base_shape.radius_y_inches());
-                                                let center_dist = shooter_transform
-                                                    .translation
-                                                    .truncate()
-                                                    .distance(clicked_transform.translation.truncate());
-                                                let edge_dist = (center_dist - shooter_r - target_r).max(0.0);
-                                                edge_dist <= range
-                                            } else { false }
-                                        } else { false }
-                                    } else { false }
-                                } else { false }
-                            } else { false }
-                        } else { true }; // no db = always in range
-
-                        if in_range {
-                            phase_state.pending_target = Some(clicked_entity);
-                        }
-                    }
+        if is_friendly && !clicked_unit.is_killed {
+            // Despawn old shooter ring.
+            for ring in &rings {
+                commands.entity(ring).despawn_recursive();
+            }
+            shoot_state.selected_shooter = Some(clicked_entity);
+            shoot_state.selected_weapon_idx = None;
+            shoot_state.pending_target = None;
+        } else if is_enemy && !clicked_unit.is_killed {
+            if shoot_state.selected_shooter.is_some() && shoot_state.selected_weapon_idx.is_some() {
+                let in_range = check_weapon_range(
+                    &bases,
+                    &shoot_state,
+                    clicked_entity,
+                    clicked_unit,
+                    clicked_transform,
+                    base_db.as_deref(),
+                );
+                if in_range {
+                    shoot_state.pending_target = Some(clicked_entity);
                 }
             }
+        }
+    }
+}
 
-            GamePhase::Charge => {
-                let is_friendly = clicked_unit.player == active_player;
-                let is_enemy = clicked_unit.player != active_player;
+fn check_weapon_range(
+    bases: &Query<(Entity, &UnitBase, &Transform)>,
+    shoot_state: &ShootToolState,
+    _target_entity: Entity,
+    target_unit: &UnitBase,
+    target_transform: &Transform,
+    base_db: Option<&BaseDatabase>,
+) -> bool {
+    let Some(db) = base_db else { return true };
+    let Some(shooter_entity) = shoot_state.selected_shooter else { return false };
+    let Ok((_, shooter_unit, shooter_transform)) = bases.get(shooter_entity) else {
+        return false;
+    };
+    let Some(wi) = shoot_state.selected_weapon_idx else { return false };
+    let weapons: Vec<_> = db
+        .weapons_for_unit(&shooter_unit.unit_name)
+        .iter()
+        .filter(|w| w.range.trim() != "Melee")
+        .collect();
+    let Some(weapon) = weapons.get(wi) else { return false };
+    let Some(range) = BaseDatabase::weapon_range_inches(weapon) else {
+        return false;
+    };
+    let shooter_r = shooter_unit
+        .base_shape
+        .radius_x_inches()
+        .max(shooter_unit.base_shape.radius_y_inches());
+    let target_r = target_unit
+        .base_shape
+        .radius_x_inches()
+        .max(target_unit.base_shape.radius_y_inches());
+    let center_dist = shooter_transform
+        .translation
+        .truncate()
+        .distance(target_transform.translation.truncate());
+    let edge_dist = (center_dist - shooter_r - target_r).max(0.0);
+    edge_dist <= range
+}
 
-                if is_friendly && !clicked_unit.is_killed && !clicked_unit.has_advanced && !clicked_unit.is_performing_action {
-                    // Select as the charger; spawn/replace the charge ring.
-                    phase_state.declared_charger = Some(clicked_entity);
-                    phase_state.declared_charge_target = None;
-                    phase_state.charge_declared = None;
+/// Charge tool: friendly → charger, enemy → add to targets.
+fn handle_charge_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<(Entity, &UnitBase, &Transform)>,
+    mut charge_state: ResMut<ChargeToolState>,
+    phase_state: Res<PhaseState>,
+    timeline: Res<GameTimeline>,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    rings: Query<Entity, With<ChargeRangeRing>>,
+) {
+    if !timeline.locked {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok((clicked_entity, clicked_unit, clicked_transform)) = bases.get(ev.target) else {
+            continue;
+        };
+        let is_friendly = clicked_unit.player == phase_state.active_player;
+        let is_enemy = clicked_unit.player != phase_state.active_player;
 
-                    // Despawn old charge ring if any.
-                    if let Some(old) = phase_state.charge_ring_entity.take() {
-                        commands.entity(old).despawn_recursive();
-                    }
-
-                    // Spawn 12" orange charge range ring, offset by charger's base radius so
-                    // the ring represents the base edge reaching 12" out.
-                    let charger_radius = clicked_unit.base_shape.radius_x_inches()
-                        .max(clicked_unit.base_shape.radius_y_inches());
-                    let ring_r = 12.0 + charger_radius;
-                    let pos = clicked_transform.translation.truncate();
-                    let ring_entity = commands
-                        .spawn((
-                            Mesh2d(meshes.add(Annulus::new(ring_r, ring_r + 0.12))),
-                            MeshMaterial2d(materials.add(ColorMaterial::from_color(
-                                Color::srgba(1.0, 0.5, 0.0, 0.85),
-                            ))),
-                            Transform::from_xyz(pos.x, pos.y, 0.5),
-                            Visibility::Visible,
-                            ChargeRangeRing,
-                            PickingBehavior::IGNORE,
-                        ))
-                        .id();
-                    phase_state.charge_ring_entity = Some(ring_entity);
-                } else if is_enemy && !clicked_unit.is_killed {
-                    if phase_state.declared_charger.is_some() {
-                        phase_state.declared_charge_target = Some(clicked_entity);
-                    }
-                }
+        if is_friendly
+            && !clicked_unit.is_killed
+            && !clicked_unit.has_advanced
+            && !clicked_unit.is_performing_action
+        {
+            // Despawn old charge ring.
+            for ring in &rings {
+                commands.entity(ring).despawn_recursive();
             }
 
-            GamePhase::Fight => {
-                // In Fight both sides pile in — any non-killed unit is a valid kill target.
-                if !clicked_unit.is_killed {
-                    phase_state.pending_kill_target = Some(clicked_entity);
+            charge_state.declared_charger = Some(clicked_entity);
+            charge_state.charge_targets.clear();
+            charge_state.charge_declared = None;
+
+            // Spawn 12" charge range ring.
+            let charger_radius = clicked_unit
+                .base_shape
+                .radius_x_inches()
+                .max(clicked_unit.base_shape.radius_y_inches());
+            let ring_r = 12.0 + charger_radius;
+            let pos = clicked_transform.translation.truncate();
+            commands.spawn((
+                Mesh2d(meshes.add(Annulus::new(ring_r, ring_r + 0.12))),
+                MeshMaterial2d(materials.add(ColorMaterial::from_color(
+                    Color::srgba(1.0, 0.5, 0.0, 0.85),
+                ))),
+                Transform::from_xyz(pos.x, pos.y, 0.5),
+                Visibility::Visible,
+                ChargeRangeRing,
+                PickingBehavior::IGNORE,
+            ));
+        } else if is_enemy && !clicked_unit.is_killed {
+            if charge_state.declared_charger.is_some() {
+                if !charge_state.charge_targets.contains(&clicked_entity) {
+                    charge_state.charge_targets.push(clicked_entity);
                 }
             }
-
-            _ => {}
         }
     }
 }
 
 /// Keep the charge ring centred on the declared charger's current position.
 fn sync_charge_ring_position(
-    phase_state: Res<PhaseState>,
+    charge_state: Res<ChargeToolState>,
     units: Query<&Transform, With<UnitBase>>,
     mut rings: Query<&mut Transform, (With<ChargeRangeRing>, Without<UnitBase>)>,
 ) {
-    let Some(charger) = phase_state.declared_charger else {
-        return;
-    };
-    let Some(ring_entity) = phase_state.charge_ring_entity else {
+    let Some(charger) = charge_state.declared_charger else {
         return;
     };
     if let Ok(unit_t) = units.get(charger) {
-        if let Ok(mut ring_t) = rings.get_mut(ring_entity) {
+        for mut ring_t in &mut rings {
             ring_t.translation.x = unit_t.translation.x;
             ring_t.translation.y = unit_t.translation.y;
         }
     }
 }
 
-/// Applies the confirmed kill from the UI: sets `is_killed` and `killed_this_phase`.
+/// Battleshock tool: click unit to set as pending.
+fn handle_battleshock_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<(Entity, &UnitBase)>,
+    mut bs_state: ResMut<BattleshockToolState>,
+    timeline: Res<GameTimeline>,
+) {
+    if !timeline.locked {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok((clicked_entity, clicked_unit)) = bases.get(ev.target) else {
+            continue;
+        };
+        if !clicked_unit.is_killed {
+            bs_state.pending_target = Some(clicked_entity);
+        }
+    }
+}
+
+/// RangeRing tool: click unit to select for ring placement.
+fn handle_rangering_click(
+    mut click_events: EventReader<Pointer<Click>>,
+    bases: Query<(Entity, &UnitBase)>,
+    mut rr_state: ResMut<RangeRingToolState>,
+    timeline: Res<GameTimeline>,
+) {
+    if !timeline.locked {
+        return;
+    }
+    for ev in click_events.read() {
+        let Ok((clicked_entity, _)) = bases.get(ev.target) else {
+            continue;
+        };
+        rr_state.selected_unit = Some(clicked_entity);
+    }
+}
+
+// ── Tint systems ─────────────────────────────────────────────────────────────
+
+fn grey_tint(color: Color) -> Color {
+    let s = color.to_srgba();
+    let t = 0.5_f32;
+    Color::srgb(
+        s.red * (1.0 - t) + 0.5 * t,
+        s.green * (1.0 - t) + 0.5 * t,
+        s.blue * (1.0 - t) + 0.5 * t,
+    )
+}
+
+fn sync_unit_tint(
+    timeline: Res<GameTimeline>,
+    phase_state: Res<PhaseState>,
+    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>)>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (unit_base, mat_handle) in &units {
+        let target = if timeline.locked {
+            if unit_base.player == phase_state.active_player {
+                unit_base.color
+            } else {
+                grey_tint(unit_base.color)
+            }
+        } else {
+            unit_base.color
+        };
+
+        let needs_update = materials.get(mat_handle.id()).map(|m| m.color != target).unwrap_or(false);
+        if needs_update {
+            if let Some(mat) = materials.get_mut(mat_handle.id()) {
+                mat.color = target;
+            }
+        }
+    }
+}
+
+fn sync_killed_unit_tint(
+    units: Query<(&UnitBase, &MeshMaterial2d<ColorMaterial>), Changed<UnitBase>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    for (unit_base, mat_handle) in &units {
+        if unit_base.is_killed {
+            if let Some(mat) = materials.get_mut(mat_handle.id()) {
+                let s = unit_base.color.to_srgba();
+                mat.color = Color::srgba(s.red, s.green, s.blue, 0.3);
+            }
+        }
+    }
+}
+
+// ── Event-driven confirm systems ─────────────────────────────────────────────
+
 fn confirm_kills(
-    mut phase_state: ResMut<PhaseState>,
+    mut events: EventReader<ConfirmKill>,
     mut units: Query<&mut UnitBase>,
 ) {
-    let Some(entity) = phase_state.confirmed_kill.take() else {
-        return;
-    };
-    if let Ok(mut unit) = units.get_mut(entity) {
-        unit.is_killed = true;
-        unit.killed_this_phase = true;
+    for ev in events.read() {
+        if let Ok(mut unit) = units.get_mut(ev.0) {
+            unit.is_killed = true;
+            unit.killed_this_phase = true;
+        }
     }
 }
 
-/// Applies the "performing action" flag from the UI.
 fn confirm_action_flag(
-    mut phase_state: ResMut<PhaseState>,
+    mut events: EventReader<ConfirmAction>,
     mut units: Query<&mut UnitBase>,
 ) {
-    let Some(entity) = phase_state.confirm_action.take() else {
-        return;
-    };
-    if let Ok(mut unit) = units.get_mut(entity) {
-        unit.is_performing_action = true;
+    for ev in events.read() {
+        if let Ok(mut unit) = units.get_mut(ev.0) {
+            unit.is_performing_action = true;
+        }
     }
 }
 
-/// Drag handling via Bevy Picking pointer events.
+// ── Drag handling ────────────────────────────────────────────────────────────
+
 fn handle_drag(
     mut bases: Query<(Entity, &mut Transform, &mut UnitBase)>,
     mut drag_events: EventReader<Pointer<Drag>>,
@@ -661,15 +856,11 @@ fn handle_drag(
     camera_q: Query<(&Camera, &GlobalTransform)>,
     timeline: Res<GameTimeline>,
     phase_state: Res<PhaseState>,
+    tool: Res<State<ActiveTool>>,
+    charge_state: Res<ChargeToolState>,
+    enforce_max: Res<EnforceMaxMove>,
     mut ev_unit_moved: EventWriter<UnitMoved>,
 ) {
-    // Gate: drag is only valid in Movement or Charge phases (or pre-lock).
-    if timeline.locked && !phase_state.phase.drag_allowed() {
-        // Drain events without processing.
-        for _ in drag_events.read() {}
-        for _ in drag_end_events.read() {}
-        return;
-    }
     let terrain_pieces: Vec<TerrainPiece> = active_layout
         .0
         .as_ref()
@@ -677,11 +868,12 @@ fn handle_drag(
         .map(|l| l.pieces.clone())
         .unwrap_or_default();
 
-    // Snapshot all unit positions before any mutations for overlap checking on DragEnd.
     let unit_snapshot: Vec<(Entity, Vec2, BaseShape)> = bases
         .iter()
         .map(|(e, t, ub)| (e, t.translation.truncate(), ub.base_shape.clone()))
         .collect();
+
+    let active_tool = *tool.get();
 
     for ev in drag_events.read() {
         let Ok((entity, mut transform, unit_base)) = bases.get_mut(ev.target) else {
@@ -690,24 +882,20 @@ fn handle_drag(
         if unit_base.locked {
             continue;
         }
-        // Skip units that don't belong to the active player's turn.
         if timeline.locked && unit_base.player != phase_state.active_player {
             continue;
         }
-        // In Charge phase, only the declared charger may be dragged.
-        if timeline.locked && phase_state.phase == GamePhase::Charge {
-            if phase_state.charge_declared != Some(true) {
+        // Charge tool: only declared charger after success.
+        if active_tool == ActiveTool::Charge {
+            if charge_state.charge_declared != Some(true) {
                 continue;
             }
-            if phase_state.declared_charger != Some(entity) {
+            if charge_state.declared_charger != Some(entity) {
                 continue;
             }
         }
 
-        // Bevy Picking Drag delta is in logical pixels.
-        // Convert to world units: we derive scale from the camera's NDC viewport.
         let delta_world = if let Ok((cam, cam_gt)) = camera_q.get_single() {
-            // Map two screen points through the camera to get world scale.
             let origin_ndc = Vec2::ZERO;
             let offset_ndc = Vec2::new(1.0, 0.0);
             let world_origin = cam
@@ -740,16 +928,15 @@ fn handle_drag(
         if unit_base.locked {
             continue;
         }
-        // Snap back if this unit doesn't belong to the active player's turn.
         if timeline.locked && unit_base.player != phase_state.active_player {
             transform.translation.x = unit_base.last_valid_pos.x;
             transform.translation.y = unit_base.last_valid_pos.y;
             continue;
         }
-        // In Charge phase, snap back if not the declared charger after success.
-        if timeline.locked && phase_state.phase == GamePhase::Charge {
-            let is_charger = phase_state.declared_charger == Some(entity)
-                && phase_state.charge_declared == Some(true);
+        // Charge: snap back if not declared charger after success.
+        if active_tool == ActiveTool::Charge {
+            let is_charger = charge_state.declared_charger == Some(entity)
+                && charge_state.charge_declared == Some(true);
             if !is_charger {
                 transform.translation.x = unit_base.last_valid_pos.x;
                 transform.translation.y = unit_base.last_valid_pos.y;
@@ -757,7 +944,7 @@ fn handle_drag(
             }
         }
 
-        // In a historical view, discard the drag and snap back.
+        // Historical view: snap back.
         if timeline.locked && timeline.current_index < timeline.snapshots.len() {
             transform.translation.x = unit_base.last_valid_pos.x;
             transform.translation.y = unit_base.last_valid_pos.y;
@@ -768,34 +955,79 @@ fn handle_drag(
         let rx = unit_base.base_shape.radius_x_inches();
         let ry = unit_base.base_shape.radius_y_inches();
 
-        // Clamp to board bounds.
         let clamped = Vec2::new(
             pos.x.clamp(rx, board.width - rx),
             pos.y.clamp(ry, board.height - ry),
         );
 
-        // Check terrain and unit-unit overlap.
+        // PileIn / Consolidate: enforce 3" max cumulative path distance.
+        if matches!(active_tool, ActiveTool::PileIn | ActiveTool::Consolidate) {
+            let cumulative = timeline.live_cumulative_distance.get(&entity).copied().unwrap_or(0.0);
+            let segment_dist = unit_base.last_valid_pos.distance(clamped);
+            if cumulative + segment_dist > 3.0 {
+                transform.translation.x = unit_base.last_valid_pos.x;
+                transform.translation.y = unit_base.last_valid_pos.y;
+                continue;
+            }
+        }
+
         let blocked = overlaps_any_terrain(clamped, &unit_base.base_shape, &terrain_pieces)
             || unit_snapshot.iter().any(|(other, other_pos, other_shape)| {
                 *other != entity && bases_overlap(clamped, &unit_base.base_shape, *other_pos, other_shape)
             });
         if blocked {
-            // Snap back to last valid position.
             transform.translation.x = unit_base.last_valid_pos.x;
             transform.translation.y = unit_base.last_valid_pos.y;
         } else {
-            let from = timeline
-                .phase_start_positions
-                .get(&entity)
-                .copied()
-                .unwrap_or(clamped);
+            // Each segment starts from the previous endpoint (multi-segment pathing).
+            let from = unit_base.last_valid_pos;
+            let segment_dist = from.distance(clamped);
+
+            // Enforce max movement distance when enabled.
+            if enforce_max.0 && timeline.locked {
+                let cumulative = timeline.live_cumulative_distance.get(&entity).copied().unwrap_or(0.0);
+                let max_dist = match active_tool {
+                    ActiveTool::Advance => unit_base.movement_inches.map(|m| m + 6.0),
+                    _ => unit_base.movement_inches,
+                };
+                if let Some(max) = max_dist {
+                    if cumulative + segment_dist > max {
+                        transform.translation.x = unit_base.last_valid_pos.x;
+                        transform.translation.y = unit_base.last_valid_pos.y;
+                        continue;
+                    }
+                }
+            }
 
             transform.translation.x = clamped.x;
             transform.translation.y = clamped.y;
             unit_base.last_valid_pos = clamped;
 
+            // Determine MoveType from active tool.
+            let move_type = match active_tool {
+                ActiveTool::Move => MoveType::Normal,
+                ActiveTool::Advance => {
+                    unit_base.has_advanced = true;
+                    MoveType::Advance
+                }
+                ActiveTool::FallBack => {
+                    unit_base.has_fallen_back = true;
+                    MoveType::FallBack
+                }
+                ActiveTool::Reactive => MoveType::Reactive,
+                ActiveTool::PileIn => MoveType::PileIn,
+                ActiveTool::Consolidate => MoveType::Consolidate,
+                ActiveTool::Charge => MoveType::Charge,
+                _ => MoveType::Normal,
+            };
+
             if timeline.locked {
-                ev_unit_moved.send(UnitMoved { entity, from, to: clamped });
+                ev_unit_moved.send(UnitMoved {
+                    entity,
+                    from,
+                    to: clamped,
+                    move_type,
+                });
             }
         }
     }

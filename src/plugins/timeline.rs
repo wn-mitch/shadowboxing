@@ -4,10 +4,10 @@ use bevy::prelude::*;
 
 use crate::events::{AdvancePhase, LockDeployment, RecordSnapshot, RewindToSnapshot, UnitMoved};
 use crate::resources::PhaseState;
-use crate::types::phase::GamePhase;
+use crate::types::phase::{ActiveTool, GamePhase};
 use crate::types::timeline::{
-    AdvanceIndicator, FirstPlayer, GameTimeline, GhostUnit, MovementArrow, MovementRangeRing,
-    TimelineSnapshot,
+    AdvanceIndicator, FirstPlayer, GameTimeline, GhostUnit, MoveType, MovementArrow,
+    MovementRangeRing, PersistentRangeRing, TimelineSnapshot,
 };
 use crate::types::units::{Player, UnitBase};
 use crate::types::visibility::VisibilityState;
@@ -35,6 +35,7 @@ impl Plugin for TimelinePlugin {
                     sync_ghost_positions,
                     sync_ring_positions,
                     sync_active_analysis_player,
+                    sync_persistent_rings,
                 )
                     .chain(),
             );
@@ -51,6 +52,7 @@ fn on_lock_deployment(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut next_tool: ResMut<NextState<ActiveTool>>,
 ) {
     for _ in events.read() {
         if timeline.locked {
@@ -63,7 +65,6 @@ fn on_lock_deployment(
             FirstPlayer::Defender => Player::Defender,
         };
 
-        // Snapshot deployment positions with no advances.
         let positions: HashMap<Entity, (Vec2, bool)> = units
             .iter()
             .map(|(e, t, _)| (e, (t.translation.truncate(), false)))
@@ -82,13 +83,11 @@ fn on_lock_deployment(
             arrow_entities: vec![],
         });
 
-        // Spawn ghost and ring entities for each unit.
         for (entity, transform, unit_base) in units.iter() {
             let pos = transform.translation.truncate();
             let rx = unit_base.base_shape.radius_x_inches();
             let ry = unit_base.base_shape.radius_y_inches();
 
-            // Ghost — semi-transparent copy at phase-start position.
             let ghost_mesh: Mesh = if unit_base.base_shape.is_circular() {
                 Circle::new(rx).into()
             } else {
@@ -108,7 +107,6 @@ fn on_lock_deployment(
                 .id();
             timeline.ghost_entities.insert(entity, ghost);
 
-            // Range rings — only for units with movement data.
             if let Some(m) = unit_base.movement_inches {
                 let adv_max = m + 6.0;
                 let normal = commands
@@ -139,8 +137,10 @@ fn on_lock_deployment(
             }
         }
 
-        // current_index = snapshots.len() = live sentinel (index 1 after pushing).
         timeline.current_index = timeline.snapshots.len();
+
+        // Set the default tool for the first phase (Command).
+        next_tool.set(phase_state.phase.default_tool());
     }
 }
 
@@ -150,22 +150,11 @@ fn on_unit_moved(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut timeline: ResMut<GameTimeline>,
-    units: Query<&UnitBase>,
 ) {
     for ev in events.read() {
         if !timeline.locked || timeline.current_index < timeline.snapshots.len() {
             continue;
         }
-
-        // Despawn old arrow for this unit if it exists.
-        if let Some(old_arrow) = timeline.live_arrows.remove(&ev.entity) {
-            commands.entity(old_arrow).despawn_recursive();
-        }
-
-        let color = units
-            .get(ev.entity)
-            .map(|b| b.color)
-            .unwrap_or(Color::WHITE);
 
         let arrow_entity = spawn_movement_arrow(
             &mut commands,
@@ -174,13 +163,16 @@ fn on_unit_moved(
             ev.entity,
             ev.from,
             ev.to,
-            color,
+            ev.move_type,
         );
 
-        timeline.live_arrows.insert(ev.entity, arrow_entity);
+        timeline.live_arrows.entry(ev.entity).or_default().push(arrow_entity);
+
+        let segment_dist = ev.from.distance(ev.to);
+        *timeline.live_cumulative_distance.entry(ev.entity).or_insert(0.0) += segment_dist;
+
         timeline.live_unit_positions.insert(ev.entity, ev.to);
 
-        // Make this unit's ghost visible.
         if let Some(&ghost) = timeline.ghost_entities.get(&ev.entity) {
             commands.entity(ghost).insert(Visibility::Visible);
         }
@@ -201,18 +193,17 @@ fn on_record_snapshot(
             continue;
         }
 
-        // Collect unit states before touching timeline.
         let unit_states: Vec<(Entity, Vec2, bool)> = units
             .iter()
             .map(|(entity, transform, unit_base)| {
                 let current_pos = transform.translation.truncate();
                 let advanced = if let Some(m) = unit_base.movement_inches {
-                    let start = timeline
-                        .phase_start_positions
+                    let cumulative = timeline
+                        .live_cumulative_distance
                         .get(&entity)
                         .copied()
-                        .unwrap_or(current_pos);
-                    current_pos.distance(start) > m + 0.01
+                        .unwrap_or(0.0);
+                    cumulative > m + 0.01
                 } else {
                     false
                 };
@@ -225,10 +216,9 @@ fn on_record_snapshot(
             .map(|&(e, p, adv)| (e, (p, adv)))
             .collect();
 
-        let arrow_entities: Vec<Entity> = timeline.live_arrows.values().copied().collect();
+        let arrow_entities: Vec<Entity> = timeline.live_arrows.values().flat_map(|v| v.iter().copied()).collect();
         let player = timeline.active_player_in_live_view();
 
-        // Hide all arrows, ghosts, and rings — fresh phase, nothing shown yet.
         for mut vis in &mut all_vis {
             *vis = Visibility::Hidden;
         }
@@ -240,13 +230,13 @@ fn on_record_snapshot(
             arrow_entities,
         });
 
-        // Advance phase: new start positions = current positions.
         for &(entity, current_pos, _) in &unit_states {
             timeline.phase_start_positions.insert(entity, current_pos);
             timeline.live_unit_positions.insert(entity, current_pos);
         }
 
         timeline.live_arrows.clear();
+        timeline.live_cumulative_distance.clear();
         timeline.current_index = timeline.snapshots.len();
     }
 }
@@ -265,7 +255,7 @@ fn on_rewind_to_snapshot(
         let in_live = idx >= timeline.snapshots.len();
 
         let arrows_to_show: HashSet<Entity> = if in_live {
-            timeline.live_arrows.values().copied().collect()
+            timeline.live_arrows.values().flat_map(|v| v.iter().copied()).collect()
         } else {
             timeline.snapshots[idx]
                 .arrow_entities
@@ -288,7 +278,6 @@ fn on_rewind_to_snapshot(
                 .collect()
         };
 
-        // Build lookup structures for ghost and ring classification.
         let ghost_unit_map: HashMap<Entity, Entity> = timeline
             .ghost_entities
             .iter()
@@ -302,7 +291,6 @@ fn on_rewind_to_snapshot(
 
         timeline.current_index = idx;
 
-        // Update visibility: arrows shown per snapshot, ghosts shown in live when moved, rings hidden.
         for (entity, mut vis) in &mut vis_q {
             if let Some(&unit) = ghost_unit_map.get(&entity) {
                 *vis = if in_live && timeline.live_arrows.contains_key(&unit) {
@@ -321,7 +309,6 @@ fn on_rewind_to_snapshot(
             }
         }
 
-        // Teleport units.
         for (e, pos) in &positions_to_restore {
             if let Ok((_, mut transform, mut unit_base)) = units.get_mut(*e) {
                 transform.translation.x = pos.x;
@@ -349,12 +336,12 @@ fn update_advance_indicators(
     for (entity, transform, unit_base, children) in &units {
         let advanced = if in_live {
             if let Some(m) = unit_base.movement_inches {
-                let start = timeline
-                    .phase_start_positions
+                let cumulative = timeline
+                    .live_cumulative_distance
                     .get(&entity)
                     .copied()
-                    .unwrap_or_else(|| transform.translation.truncate());
-                transform.translation.truncate().distance(start) > m + 0.01
+                    .unwrap_or(0.0);
+                cumulative > m + 0.01
             } else {
                 false
             }
@@ -385,9 +372,12 @@ fn cleanup_despawned_unit_arrows(
     mut commands: Commands,
 ) {
     for entity in removed.read() {
-        if let Some(arrow) = timeline.live_arrows.remove(&entity) {
-            commands.entity(arrow).despawn_recursive();
+        if let Some(arrows) = timeline.live_arrows.remove(&entity) {
+            for arrow in arrows {
+                commands.entity(arrow).despawn_recursive();
+            }
         }
+        timeline.live_cumulative_distance.remove(&entity);
         if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
             commands.entity(ghost).despawn_recursive();
         }
@@ -454,7 +444,56 @@ fn sync_active_analysis_player(
     }
 }
 
+/// Keeps persistent range rings centered on their associated unit.
+fn sync_persistent_rings(
+    units: Query<&Transform, With<UnitBase>>,
+    mut rings: Query<(&mut Transform, &PersistentRangeRing), Without<UnitBase>>,
+) {
+    for (mut ring_t, pr) in &mut rings {
+        if let Ok(unit_t) = units.get(pr.unit) {
+            ring_t.translation.x = unit_t.translation.x;
+            ring_t.translation.y = unit_t.translation.y;
+        }
+    }
+}
+
 // ── Phase advancement ─────────────────────────────────────────────────────────
+
+/// Generalized cleanup of killed units and their timeline data.
+fn despawn_killed_units(
+    timeline: &mut GameTimeline,
+    commands: &mut Commands,
+    units: &Query<(Entity, &mut UnitBase)>,
+    only_this_phase: bool,
+) {
+    for (entity, unit) in units.iter() {
+        let should_despawn = if only_this_phase {
+            unit.is_killed && unit.killed_this_phase
+        } else {
+            unit.is_killed
+        };
+        if !should_despawn {
+            continue;
+        }
+        if let Some(arrows) = timeline.live_arrows.remove(&entity) {
+            for arrow in arrows {
+                commands.entity(arrow).despawn_recursive();
+            }
+        }
+        timeline.live_cumulative_distance.remove(&entity);
+        if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
+            commands.entity(ghost).despawn_recursive();
+        }
+        if let Some(rings) = timeline.ring_entities.remove(&entity) {
+            for ring in rings {
+                commands.entity(ring).despawn_recursive();
+            }
+        }
+        timeline.phase_start_positions.remove(&entity);
+        timeline.live_unit_positions.remove(&entity);
+        commands.entity(entity).despawn_recursive();
+    }
+}
 
 fn on_advance_phase(
     mut events: EventReader<AdvancePhase>,
@@ -463,6 +502,7 @@ fn on_advance_phase(
     mut units: Query<(Entity, &mut UnitBase)>,
     mut commands: Commands,
     mut ev_record: EventWriter<RecordSnapshot>,
+    mut next_tool: ResMut<NextState<ActiveTool>>,
 ) {
     for _ in events.read() {
         if !timeline.locked {
@@ -481,131 +521,81 @@ fn on_advance_phase(
                 });
             }
             GamePhase::Shooting => {
-                // Despawn units killed during shooting.
-                for (entity, unit) in &units {
-                    if unit.is_killed && unit.killed_this_phase {
-                        if let Some(arrow) = timeline.live_arrows.remove(&entity) {
-                            commands.entity(arrow).despawn_recursive();
-                        }
-                        if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
-                            commands.entity(ghost).despawn_recursive();
-                        }
-                        if let Some(rings) = timeline.ring_entities.remove(&entity) {
-                            for ring in rings {
-                                commands.entity(ring).despawn_recursive();
-                            }
-                        }
-                        timeline.phase_start_positions.remove(&entity);
-                        timeline.live_unit_positions.remove(&entity);
-                        commands.entity(entity).despawn_recursive();
-                    }
-                }
+                despawn_killed_units(&mut timeline, &mut commands, &units, true);
             }
             GamePhase::Fight => {
-                // Despawn all killed units.
-                for (entity, unit) in &units {
-                    if unit.is_killed {
-                        if let Some(arrow) = timeline.live_arrows.remove(&entity) {
-                            commands.entity(arrow).despawn_recursive();
-                        }
-                        if let Some(ghost) = timeline.ghost_entities.remove(&entity) {
-                            commands.entity(ghost).despawn_recursive();
-                        }
-                        if let Some(rings) = timeline.ring_entities.remove(&entity) {
-                            for ring in rings {
-                                commands.entity(ring).despawn_recursive();
-                            }
-                        }
-                        timeline.phase_start_positions.remove(&entity);
-                        timeline.live_unit_positions.remove(&entity);
-                        commands.entity(entity).despawn_recursive();
-                    }
-                }
+                despawn_killed_units(&mut timeline, &mut commands, &units, false);
 
-                // Reset phase flags on surviving units.
                 for (_, mut unit) in &mut units {
                     if !unit.is_killed {
                         unit.has_advanced = false;
+                        unit.has_fallen_back = false;
                         unit.is_performing_action = false;
+                        unit.is_battleshocked = false;
                         unit.killed_this_phase = false;
                     }
                 }
 
-                // Record end-of-turn snapshot.
                 let turn = phase_state.turn_number.max(1);
                 let player_str = phase_state.active_player.label();
                 ev_record.send(RecordSnapshot {
                     label: format!("Turn {} — {} Fight", turn, player_str),
                 });
 
-                // Increment turn and swap active player after Fight.
                 phase_state.turn_number += 1;
                 phase_state.active_player = phase_state.active_player.other();
             }
             _ => {}
         }
 
-        // Despawn transient rings.
-        if let Some(ring) = phase_state.charge_ring_entity.take() {
-            commands.entity(ring).despawn_recursive();
-        }
-        if let Some(ring) = phase_state.shooter_range_ring.take() {
-            commands.entity(ring).despawn_recursive();
-        }
-
-        // Clear all per-phase selection state.
-        phase_state.selected_shooter = None;
-        phase_state.selected_weapon_idx = None;
-        phase_state.pending_target = None;
-        phase_state.declared_charger = None;
-        phase_state.declared_charge_target = None;
-        phase_state.charge_declared = None;
-        phase_state.pending_kill_target = None;
-
-        // Reset killed_this_phase for all units at phase boundary.
+        // Reset killed_this_phase at every phase boundary.
         for (_, mut unit) in &mut units {
             unit.killed_this_phase = false;
         }
 
-        phase_state.phase = match next {
+        timeline.live_cumulative_distance.clear();
+
+        let new_phase = match next {
             Some(p) => p,
             None => GamePhase::Command,
         };
+        phase_state.phase = new_phase;
+
+        // Switch to the new phase's default tool.
+        next_tool.set(new_phase.default_tool());
     }
 }
 
 // ── Arrow spawning ────────────────────────────────────────────────────────────
 
-fn spawn_movement_arrow(
+pub fn spawn_movement_arrow(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
     unit: Entity,
     from: Vec2,
     to: Vec2,
-    color: Color,
+    move_type: MoveType,
 ) -> Entity {
     let diff = to - from;
     let len = diff.length();
 
-    // Degenerate arrow — still spawn the marker entity for tracking.
     if len < 0.05 {
         return commands
             .spawn((
                 Transform::from_xyz(from.x, from.y, 3.5),
                 Visibility::Inherited,
-                MovementArrow { unit, from, to },
+                MovementArrow { unit, from, to, move_type },
             ))
             .id();
     }
 
     let midpoint = (from + to) / 2.0;
     let angle = diff.to_angle();
-    let head_size: f32 = 0.4;
+    let head_size: f32 = 0.55;
     let body_len = (len - head_size).max(0.01);
 
-    let srgba = color.to_srgba();
-    let arrow_color = Color::srgba(srgba.red, srgba.green, srgba.blue, 0.75);
+    let arrow_color = move_type.color();
     let mat = materials.add(ColorMaterial::from_color(arrow_color));
     let dist_label = format!("{:.1}\"", len);
 
@@ -614,18 +604,42 @@ fn spawn_movement_arrow(
             Transform::from_xyz(midpoint.x, midpoint.y, 3.5)
                 .with_rotation(Quat::from_rotation_z(angle)),
             Visibility::Inherited,
-            MovementArrow { unit, from, to },
+            MovementArrow { unit, from, to, move_type },
         ))
         .with_children(|parent| {
-            // Shaft — centered in local space, shifted left so head occupies the tip.
-            parent.spawn((
-                Mesh2d(meshes.add(Rectangle::new(body_len, 0.08))),
-                MeshMaterial2d(mat.clone()),
-                Transform::from_xyz(-(head_size / 2.0), 0.0, 0.0),
-                PickingBehavior::IGNORE,
-            ));
+            if move_type.is_dashed() {
+                // Dashed shaft for charge arrows.
+                let dash_len: f32 = 0.3;
+                let gap_len: f32 = 0.15;
+                let total_len = body_len;
+                let mut offset = -total_len / 2.0;
+                while offset < total_len / 2.0 {
+                    let seg_len = dash_len.min(total_len / 2.0 - offset);
+                    if seg_len > 0.01 {
+                        parent.spawn((
+                            Mesh2d(meshes.add(Rectangle::new(seg_len, 0.18))),
+                            MeshMaterial2d(mat.clone()),
+                            Transform::from_xyz(
+                                offset + seg_len / 2.0 - head_size / 2.0,
+                                0.0,
+                                0.0,
+                            ),
+                            PickingBehavior::IGNORE,
+                        ));
+                    }
+                    offset += dash_len + gap_len;
+                }
+            } else {
+                // Solid shaft.
+                parent.spawn((
+                    Mesh2d(meshes.add(Rectangle::new(body_len, 0.18))),
+                    MeshMaterial2d(mat.clone()),
+                    Transform::from_xyz(-(head_size / 2.0), 0.0, 0.0),
+                    PickingBehavior::IGNORE,
+                ));
+            }
 
-            // Arrowhead — triangle pointing in local +X.
+            // Arrowhead.
             parent.spawn((
                 Mesh2d(meshes.add(Triangle2d::new(
                     Vec2::new(head_size / 2.0, 0.0),
@@ -641,8 +655,10 @@ fn spawn_movement_arrow(
             parent.spawn((
                 Text2d::new(dist_label),
                 TextFont { font_size: 10.0, ..default() },
-                TextColor(Color::WHITE),
-                Transform::from_xyz(0.0, 0.3, 0.0).with_scale(Vec3::splat(0.08)),
+                TextColor(Color::BLACK),
+                Transform::from_xyz(0.0, 0.3, 0.0)
+                    .with_rotation(Quat::from_rotation_z(-angle))
+                    .with_scale(Vec3::splat(0.08)),
                 PickingBehavior::IGNORE,
             ));
         })
