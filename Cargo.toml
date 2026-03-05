@@ -13,7 +13,7 @@ bevy = { version = "0.15", default-features = false, features = [
     "bevy_render", "bevy_sprite", "bevy_state", "bevy_text", "bevy_ui",
     "bevy_winit", "bevy_window", "bevy_mesh_picking_backend",
     "bevy_ui_picking_backend", "bevy_sprite_picking_backend",
-    "serialize", "png", "default_font", "webgl2",
+    "bevy_gizmos", "serialize", "png", "default_font", "webgl2",
 ] }
 bevy_egui = "0.31"
 serde = { version = "1", features = ["derive"] }
